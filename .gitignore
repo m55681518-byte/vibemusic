@@ -15,4 +15,5 @@ vendor/
 install.log
 *.tsbuildinfo
 meta-test.json
-.freebuff/ 
+.freebuff/
+.worktrees/
