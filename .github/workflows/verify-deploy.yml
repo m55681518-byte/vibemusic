@@ -1,0 +1,40 @@
+name: verify-deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  container-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install deps (skip postinstall; yt-dlp is baked into the image)
+        run: npm ci --ignore-scripts
+
+      - name: Static deploy checks + prod build
+        run: node scripts/verify-deploy.mjs
+
+      - name: Docker build
+        run: docker build -t vibemusic:ci .
+
+      - name: Container smoke (yt-dlp + ffmpeg + HTTP 200)
+        run: |
+          docker run --rm -d --name vibemusic-smoke -p 3100:3000 vibemusic:ci
+          trap "docker rm -f vibemusic-smoke >/dev/null 2>&1" EXIT
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:3100/ >/dev/null 2>&1 && break
+            sleep 2
+          done
+          docker exec vibemusic-smoke yt-dlp --version
+          docker exec vibemusic-smoke ffmpeg -version | head -n1
+          curl -fsS http://localhost:3100/ >/dev/null
+          curl -fsS http://localhost:3100/manifest.webmanifest >/dev/null
+          echo "CONTAINER SMOKE PASS"

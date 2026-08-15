@@ -1,0 +1,8 @@
+node_modules
+.next
+.git
+.freebuff
+storage
+vendor
+*.log
+.env*
