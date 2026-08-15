@@ -71,6 +71,8 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
   const artist = info?.artist || info?.uploader || info?.channel || "Unknown artist";
 
   const base: string[] = [
+    "--impersonate",
+    "chrome-131",
     "-f",
     "bestaudio/best",
     "--no-playlist",
