@@ -64,6 +64,7 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
   try {
     info = await getMediaInfo(url);
   } catch (err) {
+    console.error("[extract] yt-dlp error:", err instanceof Error ? err.message : String(err));
     throw new Error(humanizeExtractorError(err));
   }
 
@@ -72,7 +73,7 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
 
   const base: string[] = [
     "--impersonate",
-    "chrome-131",
+    "chrome-146",
     "-f",
     "bestaudio/best",
     "--no-playlist",
@@ -107,6 +108,7 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
 
   const mp3Path = mp3PathFor(id);
   if (extractError || !(await fileExists(mp3Path))) {
+    console.error("[extract] yt-dlp error:", extractError instanceof Error ? extractError.message : String(extractError));
     throw new Error(
       humanizeExtractorError(extractError ?? new Error("Extraction finished without producing a file.")),
     );
