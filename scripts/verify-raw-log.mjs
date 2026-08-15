@@ -41,18 +41,18 @@ if (!existsSafe(ytdlp)) {
 // 3. Keep the impersonation flag (regression guard): must not have been removed.
 if (existsSafe(extract)) {
   const src = readFileSync(extract, "utf8");
-  if (/--impersonate/.test(src) && /chrome-131/.test(src)) {
-    pass("extract.ts still passes --impersonate chrome-131");
+  if (/--impersonate/.test(src) && /chrome-146/.test(src)) {
+    pass("extract.ts still passes --impersonate chrome-146");
   } else {
-    fail("extract.ts lost the --impersonate chrome-131 flag");
+    fail("extract.ts lost the --impersonate chrome-146 flag");
   }
 }
 if (existsSafe(ytdlp)) {
   const src = readFileSync(ytdlp, "utf8");
-  if (/--impersonate/.test(src) && /chrome-131/.test(src)) {
-    pass("ytdlp.ts still passes --impersonate chrome-131");
+  if (/--impersonate/.test(src) && /chrome-146/.test(src)) {
+    pass("ytdlp.ts still passes --impersonate chrome-146");
   } else {
-    fail("ytdlp.ts lost the --impersonate chrome-131 flag");
+    fail("ytdlp.ts lost the --impersonate chrome-146 flag");
   }
 }
 
