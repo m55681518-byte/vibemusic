@@ -23,7 +23,7 @@ export async function GET(req: NextRequest, ctx: { params: { id: string } }) {
     "Cache-Control": "private, max-age=300",
     "Accept-Ranges": "bytes",
   };
-  if (meta) {
+  if (meta && req.nextUrl.searchParams.get("download") === "1") {
     const fname = (meta.title || "vibemusic-track").replace(FILENAME_SAFE, "_");
     headers["Content-Disposition"] = `attachment; filename*=UTF-8''${encodeURIComponent(fname)}.mp3`;
   }

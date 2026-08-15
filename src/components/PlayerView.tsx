@@ -194,7 +194,7 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
         />
 
         <div className="cp-actions">
-          <a className="btn" href={`/api/audio/${meta.id}`} download={fileName}>
+          <a className="btn" href={`/api/audio/${meta.id}?download=1`} download={fileName}>
             Download .mp3
           </a>
           {meta.webpageUrl && (
