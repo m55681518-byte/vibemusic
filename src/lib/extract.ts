@@ -136,6 +136,12 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
     "--no-progress",
     "--no-mtime",
     "--restrict-filenames",
+    // Pull the platform's auto-captions alongside the audio so the lyrics
+    // fallback chain has a final text source: --write-auto-subs
+    // --convert-subs srt writes <id>.<lang>.srt next to the MP3.
+    "--write-auto-subs",
+    "--convert-subs",
+    "srt",
     "--output",
     outTemplate,
   ];

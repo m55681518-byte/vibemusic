@@ -101,7 +101,7 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
           const lyricsRes = await fetch(
             `/api/lyrics?artist=${encodeURIComponent(tags.artist || meta.artist)}&title=${encodeURIComponent(
               tags.title || meta.title,
-            )}`,
+            )}&id=${encodeURIComponent(meta.id)}`,
           );
           if (lyricsRes.ok) {
             const lyrics = (await lyricsRes.json()) as {

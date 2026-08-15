@@ -390,13 +390,19 @@ main,
   font-size: 1.18rem;
   font-weight: 500;
   line-height: 1.5;
-  transition: color 0.25s, transform 0.25s;
+  opacity: 0.45;
+  transition: color 0.25s, opacity 0.25s, transform 0.25s, text-shadow 0.25s;
 }
 
 .lyric-line.is-active {
   color: var(--text);
-  font-weight: 700;
+  font-size: 1.55rem;
+  font-weight: 800;
+  opacity: 1;
   transform: scale(1.02);
+  text-shadow:
+    0 0 14px rgba(167, 139, 250, 0.75),
+    0 0 34px rgba(236, 72, 153, 0.35);
 }
 
 .lyrics-plain {

@@ -68,7 +68,7 @@ export async function pruneStorage(maxAgeMs = 24 * 60 * 60 * 1000): Promise<void
     const dir = storageDir();
     const now = Date.now();
     for (const name of await fsp.readdir(dir)) {
-      if (!name.endsWith(".mp3") && !name.endsWith(".json")) continue;
+      if (!name.endsWith(".mp3") && !name.endsWith(".json") && !name.endsWith(".srt")) continue;
       const full = path.join(dir, name);
       try {
         const stat = await fsp.stat(full);
