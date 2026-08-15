@@ -53,6 +53,9 @@ export function humanizeExtractorError(err: unknown): string {
   if (/private|login required|sign in/i.test(lower)) {
     return "This video is private or requires a login.";
   }
+  if (/unexpected response from webpage request/i.test(lower)) {
+    return "The site rejected the request or the extractor is currently unavailable. Try again later.";
+  }
   if (/ffmpeg|avconv/i.test(lower) && /not found|not installed|missing|could not|failed/i.test(lower)) {
     return "Converting audio to MP3 requires ffmpeg, which is missing on this server.";
   }

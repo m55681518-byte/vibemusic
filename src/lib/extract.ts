@@ -5,7 +5,7 @@ import {
   extractAudioToFile,
   humanizeExtractorError,
 } from "./ytdlp";
-import { getCobaltAudio } from "./cobalt";
+import { getCobaltAudio, deriveThumbnailUrl } from "./cobalt";
 import {
   storageDir,
   idForUrl,
@@ -20,6 +20,38 @@ import {
 function isBotBlockError(err: unknown): boolean {
   const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
   return /sign in to confirm|not a bot|bot|403|request blocked|captcha|private/i.test(message);
+}
+
+/**
+ * Downloads the cobalt-provided audio, writes it to disk, and builds a TrackMeta
+ * with a derived cover thumbnail (YouTube/TikTok) so cobalt tracks show art.
+ */
+async function writeCobaltTrack(
+  url: string,
+  id: string,
+  mp3Path: string,
+  cobalt: Awaited<ReturnType<typeof getCobaltAudio>>,
+): Promise<TrackMeta> {
+  const response = await fetch(cobalt.audioUrl, { signal: AbortSignal.timeout(120_000) });
+  if (!response.ok) throw new Error(`Cobalt download failed: ${response.status}`);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  await fsp.writeFile(mp3Path, buffer);
+  const track: TrackMeta = {
+    id,
+    url,
+    title: cobalt.title,
+    artist: cobalt.artist,
+    album: undefined,
+    duration: undefined,
+    thumbnail: deriveThumbnailUrl(url),
+    webpageUrl: url,
+    extractor: "cobalt",
+    mp3Path,
+    sizeBytes: buffer.length,
+    createdAt: Date.now(),
+  };
+  await saveMeta(track);
+  return track;
 }
 
 const singleFlight = new Map<string, Promise<ExtractResult>>();
@@ -72,34 +104,17 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
     info = await getMediaInfo(url);
   } catch (err) {
     console.error("[extract] yt-dlp error:", err instanceof Error ? err.message : String(err));
+    // Last resort on ANY extractor failure (bot block, TikTok "Unexpected
+    // response", etc.): try the cobalt fallback before surfacing the error.
+    try {
+      const cobalt = await getCobaltAudio(url);
+      const track = await writeCobaltTrack(url, id, mp3Path, cobalt);
+      return { track, cached: false };
+    } catch (cobaltErr) {
+      console.error("[extract] cobalt fallback failed:", cobaltErr instanceof Error ? cobaltErr.message : String(cobaltErr));
+    }
     if (isBotBlockError(err)) {
-      console.error("[extract] yt-dlp bot block, trying cobalt fallback");
-      try {
-        const cobalt = await getCobaltAudio(url);
-        const response = await fetch(cobalt.audioUrl, { signal: AbortSignal.timeout(120_000) });
-        if (!response.ok) throw new Error(`Cobalt download failed: ${response.status}`);
-        const buffer = Buffer.from(await response.arrayBuffer());
-        await fsp.writeFile(mp3PathFor(id), buffer);
-        const track: TrackMeta = {
-          id,
-          url,
-          title: cobalt.title,
-          artist: cobalt.artist,
-          album: undefined,
-          duration: undefined,
-          thumbnail: undefined,
-          webpageUrl: url,
-          extractor: "cobalt",
-          mp3Path,
-          sizeBytes: buffer.length,
-          createdAt: Date.now(),
-        };
-        await saveMeta(track);
-        return { track, cached: false };
-      } catch (cobaltErr) {
-        console.error("[extract] cobalt fallback failed:", cobaltErr instanceof Error ? cobaltErr.message : String(cobaltErr));
-        throw err;
-      }
+      console.error("[extract] yt-dlp bot block detected (cobalt fallback also failed)");
     }
     throw new Error(humanizeExtractorError(err));
   }
@@ -152,29 +167,20 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
       console.error("[extract] yt-dlp bot block, trying cobalt fallback");
       try {
         const cobalt = await getCobaltAudio(url);
-        const response = await fetch(cobalt.audioUrl, { signal: AbortSignal.timeout(120_000) });
-        if (!response.ok) throw new Error(`Cobalt download failed: ${response.status}`);
-        const buffer = Buffer.from(await response.arrayBuffer());
-        await fsp.writeFile(mp3PathFor(id), buffer);
-        const track: TrackMeta = {
-          id,
-          url,
-          title: cobalt.title,
-          artist: cobalt.artist,
-          album: undefined,
-          duration: undefined,
-          thumbnail: undefined,
-          webpageUrl: url,
-          extractor: "cobalt",
-          mp3Path,
-          sizeBytes: buffer.length,
-          createdAt: Date.now(),
-        };
-        await saveMeta(track);
+        const track = await writeCobaltTrack(url, id, mp3Path, cobalt);
         return { track, cached: false };
       } catch (cobaltErr) {
         console.error("[extract] cobalt fallback failed:", cobaltErr instanceof Error ? cobaltErr.message : String(cobaltErr));
       }
+    }
+    // General extractor failure (e.g. TikTok "Unexpected response from webpage
+    // request") gets the cobalt fallback too, as a last resort.
+    try {
+      const cobalt = await getCobaltAudio(url);
+      const track = await writeCobaltTrack(url, id, mp3Path, cobalt);
+      return { track, cached: false };
+    } catch (cobaltErr) {
+      console.error("[extract] cobalt fallback failed:", cobaltErr instanceof Error ? cobaltErr.message : String(cobaltErr));
     }
     throw new Error(
       humanizeExtractorError(extractError ?? new Error("Extraction finished without producing a file.")),

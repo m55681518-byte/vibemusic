@@ -15,6 +15,38 @@ interface CobaltResult {
   artist: string;
 }
 
+/**
+ * Derives a cover-art thumbnail URL for a supported source URL using pure
+ * string/URL work (no API keys, no downloads). YouTube maps to the classic
+ * i.ytimg.com hqdefault image; TikTok uses its embed cover endpoint (which
+ * redirects to the CDN cover image). Returns undefined for sources we cannot
+ * recognize so callers fall back to their placeholder.
+ */
+export function deriveThumbnailUrl(sourceUrl: string): string | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(sourceUrl);
+  } catch {
+    return undefined;
+  }
+
+  const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+
+  if (host === "youtube.com" || host === "youtu.be" || host.endsWith(".youtube.com")) {
+    const videoId =
+      parsed.searchParams.get("v") ||
+      (host === "youtu.be" ? parsed.pathname.split("/").filter(Boolean)[0] : undefined);
+    if (videoId) return `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+  }
+
+  if (host === "tiktok.com" || host.endsWith(".tiktok.com") || host.endsWith(".tiktokcdn.com")) {
+    const videoId = parsed.pathname.split("/").find((seg) => /^\d{15,20}$/.test(seg));
+    if (videoId) return `https://www.tiktok.com/embed/${videoId}/cover`;
+  }
+
+  return undefined;
+}
+
 interface CobaltResponse {
   status: string;
   url?: string;
