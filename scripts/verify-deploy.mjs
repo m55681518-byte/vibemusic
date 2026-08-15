@@ -33,10 +33,17 @@ if (!existsSync(dockerfile)) {
   } else {
     fail("Dockerfile does not install ffmpeg (look for apt-get/apk/yum install ffmpeg)");
   }
-  if (/yt-dlp/.test(df)) {
-    pass("Dockerfile references yt-dlp");
+  if (/yt-dlp_linux/.test(df)) {
+    pass("Dockerfile downloads the standalone yt-dlp_linux binary (no Python needed)");
+  } else if (/yt-dlp/.test(df)) {
+    fail("Dockerfile references yt-dlp but not the standalone yt-dlp_linux binary (the plain 'yt-dlp' artifact is a Python zipapp and will not run on node:20-slim)");
   } else {
     fail("Dockerfile does not reference yt-dlp");
+  }
+  if (/\bcurl\b/.test(lower)) {
+    pass("Dockerfile installs curl (needed to fetch yt-dlp_linux)");
+  } else {
+    fail("Dockerfile does not install curl (yt-dlp download will fail on node:20-slim)");
   }
   if (/\bfrom\s+node:\d+\b/i.test(df) || /linux/i.test(df)) {
     pass("Dockerfile is a Linux/Node base image");

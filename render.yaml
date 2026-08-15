@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: vibemusic
+    runtime: docker
+    plan: starter
+    healthCheckPath: /
+    disk:
+      name: storage
+      mountPath: /storage
+      sizeGB: 1
+    envVars:
+      - key: STORAGE_DIR
+        value: /storage
