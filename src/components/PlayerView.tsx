@@ -52,15 +52,12 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
   const [fallbackThumb, setFallbackThumb] = useState<string | null>(meta.thumbnail ?? null);
   const [title, setTitle] = useState(meta.title);
   const [artist, setArtist] = useState(meta.artist);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [downloadHref, setDownloadHref] = useState<string | null>(null);
   const [synced, setSynced] = useState<{ time: number; text: string }[] | null>(null);
   const [plain, setPlain] = useState<string | null>(null);
   const [hasLyrics, setHasLyrics] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
 
   const audioRef = useRef<HTMLAudioElement>(null);
-  const downloadRef = useRef<HTMLAnchorElement>(null);
 
   const resetTimers = useCallback(() => {
     setSynced(null);
@@ -71,24 +68,24 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
 
   useEffect(() => {
     let cancelled = false;
-    const objectUrls: string[] = [];
 
     const load = async () => {
       try {
         setStatus("loading-tags");
         resetTimers();
 
-        const res = await fetch(`/api/audio/${meta.id}`);
+        // Playback and download stream straight from the audio endpoint
+        // (it supports Range/206), so they start immediately — never gated on
+        // fetching the whole file into a blob.
+        const audioUrl = `/api/audio/${meta.id}`;
+
+        // Fetch metadata (ID3 tags / embedded cover art) in the background to
+        // enrich title/artist/cover. Neither playback nor download waits on it.
+        const res = await fetch(audioUrl);
         if (!res.ok) throw new Error(`Audio unavailable (${res.status})`);
         const blob = await res.blob();
 
-        const audioUrl = URL.createObjectURL(blob);
-        const downloadUrl = URL.createObjectURL(blob);
-        objectUrls.push(audioUrl, downloadUrl);
         if (cancelled) return;
-
-        setAudioUrl(audioUrl);
-        setDownloadHref(downloadUrl);
 
         const tags = await parseId3(blob);
         if (tags.title) setTitle(tags.title);
@@ -136,7 +133,6 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
 
     return () => {
       cancelled = true;
-      objectUrls.forEach((u) => URL.revokeObjectURL(u));
     };
   }, [meta.id, meta.artist, meta.title, resetTimers]);
 
@@ -159,11 +155,6 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
     audio.addEventListener("timeupdate", onTime);
     return () => audio.removeEventListener("timeupdate", onTime);
   }, [onTimeUpdate]);
-
-  const handleDownload = useCallback(() => {
-    if (!downloadRef.current) return;
-    downloadRef.current.click();
-  }, []);
 
   const coverSrc = coverDataUrl || fallbackThumb;
   const fileName = `${sanitizeFilename(title)}.mp3`;
@@ -198,24 +189,14 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
           ref={audioRef}
           controls
           preload="metadata"
-          src={audioUrl ?? undefined}
+          src={`/api/audio/${meta.id}`}
           className="cp-audio"
         />
 
         <div className="cp-actions">
-          <a
-            ref={downloadRef}
-            href={downloadHref ?? undefined}
-            download={fileName}
-            aria-hidden={!downloadHref}
-            tabIndex={-1}
-            style={{ display: "none" }}
-          >
-            {fileName}
-          </a>
-          <button className="btn" onClick={handleDownload} disabled={!downloadHref}>
+          <a className="btn" href={`/api/audio/${meta.id}`} download={fileName}>
             Download .mp3
-          </button>
+          </a>
           {meta.webpageUrl && (
             <a className="btn btn-ghost" href={meta.webpageUrl} target="_blank" rel="noreferrer">
               Open source
@@ -223,7 +204,7 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
           )}
         </div>
 
-        {!(audioUrl && downloadHref) && (
+        {status !== "ready" && (
           <p className="saving-hint">
             {status === "loading-tags" && "Parsing ID3 tags…"}
             {status === "fetching-lyrics" && "Finding lyrics…"}
