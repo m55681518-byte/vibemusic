@@ -74,6 +74,8 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
   const base: string[] = [
     "--impersonate",
     "chrome-146",
+    "--extractor-args",
+    "youtube:player_client=android",
     "-f",
     "bestaudio/best",
     "--no-playlist",
