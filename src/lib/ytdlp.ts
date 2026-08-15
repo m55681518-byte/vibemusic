@@ -36,7 +36,7 @@ export interface MediaInfo {
 }
 
 export async function getMediaInfo(url: string): Promise<MediaInfo> {
-  const raw = await instance().getVideoInfo(["--impersonate", "chrome-146", "--no-playlist", "--no-warnings", url]);
+  const raw = await instance().getVideoInfo(["--impersonate", "chrome-146", "--extractor-args", "youtube:player_client=android", "--no-playlist", "--no-warnings", url]);
   return raw as MediaInfo;
 }
 
