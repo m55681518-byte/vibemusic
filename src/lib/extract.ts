@@ -5,6 +5,7 @@ import {
   extractAudioToFile,
   humanizeExtractorError,
 } from "./ytdlp";
+import { getCobaltAudio } from "./cobalt";
 import {
   storageDir,
   idForUrl,
@@ -15,6 +16,11 @@ import {
   pruneStorage,
   type TrackMeta,
 } from "./store";
+
+function isBotBlockError(err: unknown): boolean {
+  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return /sign in to confirm|not a bot|bot|403|request blocked|captcha|private/i.test(message);
+}
 
 const singleFlight = new Map<string, Promise<ExtractResult>>();
 
@@ -59,12 +65,42 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
   const dir = storageDir();
   await fsp.mkdir(dir, { recursive: true });
   const outTemplate = path.join(dir, `${id}.%(ext)s`);
+  const mp3Path = mp3PathFor(id);
 
   let info: Awaited<ReturnType<typeof getMediaInfo>>;
   try {
     info = await getMediaInfo(url);
   } catch (err) {
     console.error("[extract] yt-dlp error:", err instanceof Error ? err.message : String(err));
+    if (isBotBlockError(err)) {
+      console.error("[extract] yt-dlp bot block, trying cobalt fallback");
+      try {
+        const cobalt = await getCobaltAudio(url);
+        const response = await fetch(cobalt.audioUrl, { signal: AbortSignal.timeout(120_000) });
+        if (!response.ok) throw new Error(`Cobalt download failed: ${response.status}`);
+        const buffer = Buffer.from(await response.arrayBuffer());
+        await fsp.writeFile(mp3PathFor(id), buffer);
+        const track: TrackMeta = {
+          id,
+          url,
+          title: cobalt.title,
+          artist: cobalt.artist,
+          album: undefined,
+          duration: undefined,
+          thumbnail: undefined,
+          webpageUrl: url,
+          extractor: "cobalt",
+          mp3Path,
+          sizeBytes: buffer.length,
+          createdAt: Date.now(),
+        };
+        await saveMeta(track);
+        return { track, cached: false };
+      } catch (cobaltErr) {
+        console.error("[extract] cobalt fallback failed:", cobaltErr instanceof Error ? cobaltErr.message : String(cobaltErr));
+        throw err;
+      }
+    }
     throw new Error(humanizeExtractorError(err));
   }
 
@@ -73,9 +109,11 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
 
   const base: string[] = [
     "--impersonate",
-    "chrome-146",
+    "chrome",
     "--extractor-args",
-    "youtube:player_client=android",
+    "youtube:player_client=default,-android_sdkless",
+    "--downloader-args",
+    "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
     "-f",
     "bestaudio/best",
     "--no-playlist",
@@ -108,9 +146,36 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
     }
   }
 
-  const mp3Path = mp3PathFor(id);
   if (extractError || !(await fileExists(mp3Path))) {
     console.error("[extract] yt-dlp error:", extractError instanceof Error ? extractError.message : String(extractError));
+    if (isBotBlockError(extractError)) {
+      console.error("[extract] yt-dlp bot block, trying cobalt fallback");
+      try {
+        const cobalt = await getCobaltAudio(url);
+        const response = await fetch(cobalt.audioUrl, { signal: AbortSignal.timeout(120_000) });
+        if (!response.ok) throw new Error(`Cobalt download failed: ${response.status}`);
+        const buffer = Buffer.from(await response.arrayBuffer());
+        await fsp.writeFile(mp3PathFor(id), buffer);
+        const track: TrackMeta = {
+          id,
+          url,
+          title: cobalt.title,
+          artist: cobalt.artist,
+          album: undefined,
+          duration: undefined,
+          thumbnail: undefined,
+          webpageUrl: url,
+          extractor: "cobalt",
+          mp3Path,
+          sizeBytes: buffer.length,
+          createdAt: Date.now(),
+        };
+        await saveMeta(track);
+        return { track, cached: false };
+      } catch (cobaltErr) {
+        console.error("[extract] cobalt fallback failed:", cobaltErr instanceof Error ? cobaltErr.message : String(cobaltErr));
+      }
+    }
     throw new Error(
       humanizeExtractorError(extractError ?? new Error("Extraction finished without producing a file.")),
     );
