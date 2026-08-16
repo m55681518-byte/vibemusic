@@ -73,7 +73,7 @@ export interface MediaInfo {
 }
 
 export async function getMediaInfo(url: string): Promise<MediaInfo> {
-  const raw = await instance().getVideoInfo(["--impersonate", "chrome", "--extractor-args", "youtube:player_client=default,-android_sdkless", "--downloader-args", "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5", "--no-playlist", "--no-warnings", url]);
+  const raw = await instance().getVideoInfo(["--impersonate", "chrome", "--js-runtimes", "node", "--extractor-args", "youtube:player_client=default,-android_sdkless", "--downloader-args", "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5", "--no-playlist", "--no-warnings", url]);
   return raw as MediaInfo;
 }
 
@@ -106,6 +106,8 @@ export async function downloadAutoCaptions(url: string, outDir: string, videoId:
       [
         "--impersonate",
         "chrome",
+        "--js-runtimes",
+        "node",
         "--extractor-args",
         "youtube:player_client=default,-android_sdkless",
         "--skip-download",
