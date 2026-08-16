@@ -1,18 +1,39 @@
 /**
- * Zero-config Cobalt fallback.
+ * Zero-config Cobalt pool.
  * Tries a hardcoded list of public Cobalt API instances (no keys, no env vars)
- * to obtain a direct audio download URL + metadata when yt-dlp is bot-blocked.
+ * to obtain a direct audio download URL + metadata when the source must go
+ * through an external API. Requests rotate round-robin across the pool.
  */
 
-const COBALT_INSTANCES = [
-  "https://dog.kittycat.boo",
-  "https://cobaltapi.kittycat.boo",
+interface CobaltInstance {
+  baseUrl: string;
+  /**
+   * New cobalt API (v10+) instances accept `isAudioOnly` in the request body.
+   * The legacy instances (dog/cobaltapi.kittycat.boo) reject it with
+   * error.api.invalid_body — verified live 2026-08-16 — so they get the
+   * downloadMode/audioFormat/filenameStyle fields only.
+   */
+  supportsAudioOnly?: boolean;
+}
+
+const COBALT_INSTANCES: ReadonlyArray<CobaltInstance> = [
+  { baseUrl: "https://dog.kittycat.boo" },
+  { baseUrl: "https://cobaltapi.kittycat.boo" },
   // Official instance (api.cobalt.tools). It answers HTTP but now requires a
   // JWT/API key for direct API access, so it fails fast with a clear error
   // code while the community instances above carry the load — it is kept so
   // the redundancy list has a stable third, confirmed-reachable endpoint.
-  "https://api.cobalt.tools",
+  { baseUrl: "https://api.cobalt.tools", supportsAudioOnly: true },
+  // Live community instance running the new cobalt API (auth-gated like the
+  // official one: answers HTTP, fails fast with error.api.auth.key.missing
+  // when unkeyed). Verified reachable 2026-08-16; the previously suggested
+  // https://cobalt-api.kwiatekq.dev no longer resolves (NXDOMAIN).
+  { baseUrl: "https://cobalt.aelew.dev", supportsAudioOnly: true },
 ];
+
+// Round-robin cursor: each call starts from the next instance so load spreads
+// across the pool instead of hammering the first entry every time.
+let roundRobinIndex = 0;
 
 export interface CobaltResult {
   audioUrl: string;
@@ -70,8 +91,8 @@ function parseTitleArtist(filename: string): { title: string; artist: string } {
 }
 
 /**
- * Queries every cobalt instance and returns ALL tunnel candidates in
- * COBALT_INSTANCES order. Deliberately NOT return-on-first-tunnel: some
+ * Queries every cobalt instance (round-robin start) and returns ALL tunnel
+ * candidates in pool order. Deliberately NOT return-on-first-tunnel: some
  * instances (e.g. dog.kittycat.boo) serve a tunnel URL whose body is EMPTY
  * (HTTP 200, 0 bytes), so the caller must download each candidate and only
  * accept one that actually yields bytes — falling through to the next
@@ -82,9 +103,12 @@ export async function getCobaltAudio(url: string): Promise<CobaltResult[]> {
   const candidates: CobaltResult[] = [];
   let lastError: unknown = null;
 
-  for (const instance of COBALT_INSTANCES) {
+  const start = roundRobinIndex++ % COBALT_INSTANCES.length;
+  const order = [...COBALT_INSTANCES.slice(start), ...COBALT_INSTANCES.slice(0, start)];
+
+  for (const instance of order) {
     try {
-      const res = await fetch(`${instance}/`, {
+      const res = await fetch(`${instance.baseUrl}/`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -92,6 +116,7 @@ export async function getCobaltAudio(url: string): Promise<CobaltResult[]> {
         },
         body: JSON.stringify({
           url,
+          ...(instance.supportsAudioOnly ? { isAudioOnly: true } : {}),
           downloadMode: "audio",
           audioFormat: "mp3",
           filenameStyle: "basic",
@@ -106,7 +131,7 @@ export async function getCobaltAudio(url: string): Promise<CobaltResult[]> {
         candidates.push({ audioUrl: body.url, title, artist });
       } else {
         lastError = new Error(
-          `Cobalt instance ${instance} returned status "${body.status}"` +
+          `Cobalt instance ${instance.baseUrl} returned status "${body.status}"` +
             (body.error?.code ? `: ${body.error.code}` : ""),
         );
       }

@@ -1,11 +1,25 @@
+/**
+ * External-API-only extraction ("server-side proxy"): /api/extract never
+ * executes local yt-dlp. TikTok links take the TikWM fast-track (resolves
+ * shortlinks server-side, beating TikTok's datacenter-IP Captcha); every other
+ * URL goes to a round-robin pool of public Cobalt instances. The remote audio
+ * is downloaded here, ffprobe-verified, and persisted to local storage, so the
+ * player keeps streaming /api/audio/{id} exactly as before.
+ *
+ * Legacy note: the pre-rewrite path ran local yt-dlp first with --impersonate
+ * chrome, --extractor-args "youtube:player_client=default,-android_sdkless"
+ * (failing over to youtube:player_client=tv) and --downloader-args
+ * "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5", then
+ * fell back to cobalt. TikTok anti-bot served a Captcha to datacenter IPs
+ * which yt-dlp read as "login required", and that failure also skipped the
+ * cobalt fallback — hence this rewrite. yt-dlp survives only in src/lib/ytdlp.ts
+ * for the /api/lyrics auto-caption rung (downloadAutoCaptions) and for the
+ * ffprobe-based probeAudioDuration integrity gate used below; extractAudioToFile
+ * is no longer invoked anywhere on the extract path.
+ */
 import path from "node:path";
 import { promises as fsp } from "node:fs";
-import {
-  getMediaInfo,
-  extractAudioToFile,
-  probeAudioDuration,
-  humanizeExtractorError,
-} from "./ytdlp";
+import { probeAudioDuration } from "./ytdlp";
 import { getCobaltAudio, deriveThumbnailUrl, type CobaltResult } from "./cobalt";
 import {
   storageDir,
@@ -22,25 +36,108 @@ import {
 const COBALT_MAX_ATTEMPTS = 3;
 const COBALT_RETRY_BACKOFF_MS = 2000;
 
-/**
- * Player-client variants tried IN ORDER for the yt-dlp download. The default
- * client (-android_sdkless) hits YouTube's datacenter-IP sign-in wall
- * ("Sign in to confirm you're not a bot" / "This video is private or requires
- * a login"); the tv client (YouTube's embedded-TV player) is generally NOT
- * blocked on server IPs, so it is the failover before cobalt is ever tried.
- */
-const CLIENT_VARIANTS: ReadonlyArray<readonly string[]> = [
-  ["--extractor-args", "youtube:player_client=default,-android_sdkless"],
-  ["--extractor-args", "youtube:player_client=tv"],
-];
+const TIKWM_API = "https://www.tikwm.com/api/";
+const TIKWM_QUERY_TIMEOUT_MS = 30_000;
+const TIKWM_DOWNLOAD_TIMEOUT_MS = 120_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function isBotBlockError(err: unknown): boolean {
-  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  return /sign in to confirm|not a bot|bot|403|request blocked|captcha|private/i.test(message);
+/**
+ * Matches TikTok video links (full www.tiktok.com URLs AND vt.tiktok.com /
+ * vm.tiktok.com shortlinks) so they take the TikWM fast-track instead of the
+ * generic cobalt route.
+ */
+export function isTikTokUrl(url: string): boolean {
+  let host = "";
+  try {
+    host = new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return false;
+  }
+  return host === "tiktok.com" || host.endsWith(".tiktok.com");
+}
+
+interface TikwmData {
+  title?: string;
+  cover?: string;
+  music?: string;
+  play?: string;
+  author?: { nickname?: string };
+  music_info?: { author?: string };
+}
+
+interface TikwmResponse {
+  code?: number;
+  msg?: string;
+  data?: TikwmData;
+}
+
+/**
+ * TikTok fast-track: resolves the (possibly shortlink) video through the public
+ * TikWM API — which resolves vt.tiktok.com/vm.tiktok.com shortlinks server-side,
+ * bypassing the datacenter-IP Captcha that broke local yt-dlp — then downloads
+ * the returned remote audio, ffprobe-verifies it, and persists it exactly like
+ * a cobalt track. data.music is the audio URL (fall back to data.play when
+ * empty); data.title + data.cover feed the metadata.
+ */
+async function writeTikTokTrack(url: string, id: string, mp3Path: string): Promise<TrackMeta> {
+  const res = await fetch(`${TIKWM_API}?url=${encodeURIComponent(url)}`, {
+    signal: AbortSignal.timeout(TIKWM_QUERY_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`TikWM API failed: ${res.status}`);
+
+  let body: TikwmResponse;
+  try {
+    body = (await res.json()) as TikwmResponse;
+  } catch {
+    throw new Error("TikWM API returned a non-JSON response (likely a bot challenge).");
+  }
+
+  const data = body?.data;
+  if (!data || body.code !== 0) {
+    throw new Error(`TikWM could not resolve this TikTok link: ${body?.msg ?? "unknown error"}`);
+  }
+
+  const audioUrl = (data.music && data.music.trim()) || data.play;
+  if (!audioUrl) {
+    throw new Error("TikWM returned no audio URL for this TikTok link.");
+  }
+
+  const download = await fetch(audioUrl, { signal: AbortSignal.timeout(TIKWM_DOWNLOAD_TIMEOUT_MS) });
+  if (!download.ok) throw new Error(`TikTok audio download failed: ${download.status}`);
+  const buffer = Buffer.from(await download.arrayBuffer());
+  // Refuse empty bodies exactly like the cobalt path: never persist a 0-byte
+  // mp3 + meta that /api/audio can never play.
+  if (!buffer.length) throw new Error("TikWM audio yielded 0 bytes.");
+  await fsp.writeFile(mp3Path, buffer);
+
+  // ffprobe-verify BEFORE persisting: delete + error on an unverifiable file so
+  // a broken track is never saved or served, and store the REAL probed duration
+  // for /api/lyrics timestamp rescaling.
+  const probedDuration = await probeAudioDuration(mp3Path);
+  if (probedDuration === null) {
+    await fsp.unlink(mp3Path).catch(() => undefined);
+    throw new Error("TikWM audio is not playable (ffprobe verification failed).");
+  }
+
+  const track: TrackMeta = {
+    id,
+    url,
+    title: data.title?.trim() || "Untitled",
+    artist: data.author?.nickname?.trim() || data.music_info?.author?.trim() || "Unknown artist",
+    album: undefined,
+    duration: probedDuration,
+    thumbnail: data.cover || undefined,
+    webpageUrl: url,
+    extractor: "tikwm",
+    mp3Path,
+    sizeBytes: buffer.length,
+    createdAt: Date.now(),
+  };
+  await saveMeta(track);
+  return track;
 }
 
 /**
@@ -126,7 +223,7 @@ async function tryCobaltFallback(
       lastError = err;
       if (attempt < COBALT_MAX_ATTEMPTS) {
         console.error(
-          `[extract] cobalt fallback attempt ${attempt}/${COBALT_MAX_ATTEMPTS} failed, retrying in ${COBALT_RETRY_BACKOFF_MS}ms:`,
+          `[extract] cobalt attempt ${attempt}/${COBALT_MAX_ATTEMPTS} failed, retrying in ${COBALT_RETRY_BACKOFF_MS}ms:`,
           err instanceof Error ? err.message : String(err),
         );
         await sleep(COBALT_RETRY_BACKOFF_MS);
@@ -208,129 +305,14 @@ export async function getTrackInfo(rawUrl: string): Promise<ExtractResult> {
 async function doExtract(url: string, id: string): Promise<ExtractResult> {
   const dir = storageDir();
   await fsp.mkdir(dir, { recursive: true });
-  const outTemplate = path.join(dir, `${id}.%(ext)s`);
   const mp3Path = mp3PathFor(id);
 
-  let info: Awaited<ReturnType<typeof getMediaInfo>>;
-  try {
-    info = await getMediaInfo(url);
-  } catch (err) {
-    console.error("[extract] yt-dlp error:", err instanceof Error ? err.message : String(err));
-    // Last resort on ANY extractor failure (bot block, TikTok "Unexpected
-    // response", etc.): try the cobalt fallback before surfacing the error.
-    try {
-      const track = await tryCobaltFallback(url, id, mp3Path);
-      return { track, cached: false };
-    } catch (cobaltErr) {
-      console.error("[extract] cobalt fallback failed:", cobaltErr instanceof Error ? cobaltErr.message : String(cobaltErr));
-    }
-    if (isBotBlockError(err)) {
-      console.error("[extract] yt-dlp bot block detected (cobalt fallback also failed)");
-    }
-    throw new Error(humanizeExtractorError(err));
-  }
+  // TikTok shortlinks take the TikWM fast-track; every other URL goes straight
+  // to the cobalt pool (retry loop + backoff below). No local yt-dlp attempt.
+  const track = isTikTokUrl(url)
+    ? await writeTikTokTrack(url, id, mp3Path)
+    : await tryCobaltFallback(url, id, mp3Path);
 
-  const title = info?.title || info?.track || "Untitled";
-  const artist = info?.artist || info?.uploader || info?.channel || "Unknown artist";
-
-  const base: string[] = [
-    "--impersonate",
-    "chrome",
-    "--js-runtimes",
-    "node",
-    "--downloader-args",
-    "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-    "-f",
-    "bestaudio/best",
-    "--no-playlist",
-    "--no-warnings",
-    "--no-progress",
-    "--no-mtime",
-    "--restrict-filenames",
-    // Pull the platform's auto-captions alongside the audio so the lyrics
-    // fallback chain has a final text source: --write-auto-subs
-    // --convert-subs srt writes <id>.<lang>.srt next to the MP3.
-    "--write-auto-subs",
-    "--convert-subs",
-    "srt",
-    "--output",
-    outTemplate,
-  ];
-  const runAttempt = (extra: string[], clientArgs: readonly string[]) =>
-    extractAudioToFile([...base, ...clientArgs, ...extra, url]);
-
-  let extractError: unknown = null;
-  let probedDuration: number | null = null;
-  // Try every player client (default first, then tv) so a single blocked
-  // client never kills the whole request; after each variant ffprobe-verify
-  // the written file and only accept one that really plays.
-  for (const clientArgs of CLIENT_VARIANTS) {
-    try {
-      await runAttempt(
-        [
-          "--extract-audio",
-          "--audio-format",
-          "mp3",
-          "--audio-quality",
-          "0",
-          "--embed-thumbnail",
-          "--add-metadata",
-        ],
-        clientArgs,
-      );
-    } catch (err) {
-      extractError = err;
-      try {
-        await runAttempt(["--extract-audio", "--audio-format", "mp3"], clientArgs);
-      } catch (err2) {
-        extractError = err2;
-      }
-    }
-    // The real acceptance test: ffprobe the stored file. A truncated/empty/
-    // unverifiable mp3 would "play partly then stop" on the client, so a
-    // failed probe deletes the file and falls through to the next client.
-    probedDuration = await probeAudioDuration(mp3Path);
-    if (probedDuration !== null) break;
-    await fsp.unlink(mp3Path).catch(() => undefined);
-  }
-
-  if (probedDuration === null) {
-    console.error("[extract] yt-dlp error:", extractError instanceof Error ? extractError.message : String(extractError));
-    if (isBotBlockError(extractError)) {
-      console.error("[extract] yt-dlp bot block, trying cobalt fallback");
-    }
-    // General extractor failure (e.g. TikTok "Unexpected response from webpage
-    // request") gets the cobalt fallback too, as a last resort.
-    try {
-      const track = await tryCobaltFallback(url, id, mp3Path);
-      return { track, cached: false };
-    } catch (cobaltErr) {
-      console.error("[extract] cobalt fallback failed:", cobaltErr instanceof Error ? cobaltErr.message : String(cobaltErr));
-    }
-    throw new Error(
-      humanizeExtractorError(extractError ?? new Error("Extraction finished without producing a file.")),
-    );
-  }
-
-  const stat = await fsp.stat(mp3Path);
-
-  const track: TrackMeta = {
-    id,
-    url,
-    title,
-    artist,
-    album: info?.album,
-    // Real, probed duration (ffprobe on the stored file) — feeds /api/lyrics
-    // timestamp rescaling for slowed/sped-up variants.
-    duration: probedDuration ?? info?.duration,
-    thumbnail: info?.thumbnail,
-    webpageUrl: info?.webpage_url,
-    extractor: info?.extractor,
-    mp3Path,
-    sizeBytes: stat.size,
-    createdAt: Date.now(),
-  };
-  await saveMeta(track);
   pruneStorage().catch(() => undefined);
   return { track, cached: false };
 }

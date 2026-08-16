@@ -34,6 +34,7 @@ export async function POST(req: NextRequest) {
       album: track.album ?? undefined,
       duration: track.duration ?? undefined,
       thumbnail: track.thumbnail ?? undefined,
+      cover: track.thumbnail ?? undefined,
       extractor: track.extractor ?? undefined,
       audioUrl: `/api/audio/${track.id}`,
       metaUrl: `/api/meta/${track.id}`,
