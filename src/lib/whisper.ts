@@ -1,18 +1,30 @@
 import { promises as fsp } from "node:fs";
+import { Client } from "@gradio/client";
 import { buildLrc, captionsToPlain, type SrtLine } from "./lyrics";
 
 /**
- * Whisper speech-to-text fallback (free serverless: Groq / Hugging Face).
+ * Whisper speech-to-text tier (100% server-side, Node-only module).
  *
- * Config comes from env ONLY — never hardcode a key:
- *   - AI_WHISPER_API_KEY (also accepts AI_WHISPER_KEY / GROQ_API_KEY)
- *   - AI_WHISPER_ENDPOINT (default: Groq OpenAI-compatible transcriptions)
- *   - AI_WHISPER_MODEL   (default: whisper-large-v3)
+ * PRIMARY: zero-key public Hugging Face Gradio Spaces via the official
+ * @gradio/client. The stored MP3 is uploaded to a public Whisper space, the
+ * transcription endpoint is discovered through view_api() (never assumed),
+ * and the returned timestamped segments (start/end/text) are parsed into the
+ * standardized LRC array [{ timeInSeconds: seg.start, text: seg.text }] before
+ * being rendered as synced LRC via buildLrc.
  *
- * The stored MP3 is POSTed as multipart form data; the verbose_json response's
- * `segments` (start/text/no_speech_prob) are mapped into timed LRC lines.
- * Any failure (missing key, network, HTTP error, timeout, fs error) resolves
- * to `null` — this tier never throws through to the route.
+ *   - Space list: AI_WHISPER_SPACES (comma-separated env override), else the
+ *     built-in public fallback array below. No API key or token is needed and
+ *     none is ever hardcoded.
+ *   - Failover: each space gets PER_SPACE_TIMEOUT_MS (5000ms) to answer; when
+ *     it is busy/queuing, the next space is tried.
+ *   - Budget: a TOTAL_TIMEOUT_MS (15000ms) race guards the whole tier.
+ *
+ * LAST RESORT: the legacy Groq key path (AI_WHISPER_API_KEY /
+ * AI_WHISPER_KEY / GROQ_API_KEY) when a key IS configured.
+ *
+ * Every failure mode (timeout, empty result, network/HTTP error) resolves
+ * gracefully to `null` or { synced:null, plain:null, isInstrumental:true } —
+ * this module never propagates an exception to the route.
  */
 
 export interface WhisperSegment {
@@ -36,6 +48,39 @@ interface VerboseJsonSegment {
   no_speech_prob?: number;
 }
 
+/** A timestamped segment as returned by a Gradio Whisper space. */
+interface GradioSegment {
+  start: number;
+  end: number;
+  text: string;
+  noSpeechProb?: number;
+}
+
+/** Minimal shape of the view_api() result we rely on. */
+interface GradioEndpointInfo {
+  parameters: { label: string; type: string }[];
+}
+
+interface GradioApiInfo {
+  named_endpoints: Record<string, GradioEndpointInfo>;
+  unnamed_endpoints: Record<string, GradioEndpointInfo>;
+}
+
+/** Public high-spec Whisper Spaces, tried in order (env-overridable). */
+const DEFAULT_WHISPER_SPACES = [
+  "openai/whisper",
+  "hf-audio/whisper-large-v3",
+  "hf-audio/whisper-large-v3-turbo",
+];
+
+/** Fail over to the next space when one is busy/queuing after this long. */
+const PER_SPACE_TIMEOUT_MS = 5000;
+
+/** Hard ceiling for the whole Tier 2 execution (Gradio + Groq). */
+const TOTAL_TIMEOUT_MS = 15000;
+
+const NO_SPEECH_THRESHOLD = 0.5;
+
 function whisperApiKey(): string | null {
   return (
     process.env.AI_WHISPER_API_KEY ||
@@ -45,30 +90,245 @@ function whisperApiKey(): string | null {
   );
 }
 
-const NO_SPEECH_THRESHOLD = 0.5;
+/** Resolves to `null` after `ms` milliseconds (graceful timeout signal). */
+function timeoutNull(ms: number): Promise<null> {
+  return new Promise<null>((resolve) => {
+    setTimeout(() => resolve(null), ms);
+  });
+}
+
+/**
+ * Resolves the ordered list of Whisper space slugs: AI_WHISPER_SPACES
+ * (comma-separated) when set, otherwise the built-in public spaces.
+ */
+function whisperSpaces(): string[] {
+  const raw = process.env.AI_WHISPER_SPACES;
+  if (raw && raw.trim()) {
+    const parsed = raw
+      .split(",")
+      .map((slug) => slug.trim())
+      .filter(Boolean);
+    if (parsed.length) return parsed;
+  }
+  return DEFAULT_WHISPER_SPACES;
+}
 
 /**
  * Transcribes `mp3Path` into timed lyrics. Returns:
- *   - `null` when no API key is configured or on ANY failure (quiet no-op),
+ *   - `null` on ANY failure (unreachable space, timeout, missing key, network
+ *     error) — a quiet no-op so the route falls through gracefully,
  *   - `{ synced, plain, isInstrumental: true }` when Whisper ran but found no
- *     usable speech (empty segments, empty text, or no_speech_prob > 0.5 on
- *     every segment),
+ *     usable speech (empty/bare segments),
  *   - `{ synced, plain, isInstrumental: false }` with the transcript otherwise.
  */
 export async function whisperTranscribe(mp3Path: string): Promise<WhisperTranscribeResult | null> {
-  const apiKey = whisperApiKey();
-  if (!apiKey) return null; // not configured → skip straight to the empty result
+  try {
+    const buffer = await fsp.readFile(mp3Path);
 
+    // The whole tier (Gradio spaces + Groq fallback) runs under one 15s cap.
+    const result = await Promise.race([
+      runAllTiers(buffer),
+      timeoutNull(TOTAL_TIMEOUT_MS),
+    ]);
+    return result;
+  } catch {
+    // Never propagate a failure through to the route.
+    return null;
+  }
+}
+
+/** Zero-key Gradio spaces first, then the optional keyed Groq path. */
+async function runAllTiers(buffer: Buffer): Promise<WhisperTranscribeResult | null> {
+  const viaSpaces = await transcribeViaGradio(buffer);
+  if (viaSpaces) return viaSpaces;
+
+  const apiKey = whisperApiKey();
+  if (!apiKey) return null; // no key → nothing else to try
+  return groqTranscribe(buffer, apiKey);
+}
+
+/** Tries each public space in order, failing over within 5s per space. */
+async function transcribeViaGradio(buffer: Buffer): Promise<WhisperTranscribeResult | null> {
+  for (const slug of whisperSpaces()) {
+    const outcome = await Promise.race([
+      transcribeWithSpace(slug, buffer),
+      timeoutNull(PER_SPACE_TIMEOUT_MS),
+    ]);
+    if (outcome) return outcome; // real transcript or confirmed instrumental
+  }
+  return null; // every space was busy/unreachable within its budget
+}
+
+/**
+ * Connects to one space, discovers the transcription endpoint via view_api(),
+ * uploads the audio buffer and parses the returned segments. Any failure for
+ * this space resolves to `null` so the caller can move to the next space.
+ */
+async function transcribeWithSpace(
+  slug: string,
+  buffer: Buffer,
+): Promise<WhisperTranscribeResult | null> {
+  try {
+    const app = await Client.connect(slug);
+    const api = (await app.view_api()) as unknown as GradioApiInfo;
+    const endpoint = pickTranscribeEndpoint(api);
+    if (!endpoint) return null;
+
+    const audioFile = new File([new Uint8Array(buffer)], "audio.mp3", { type: "audio" + "/" + "mpeg" });
+    const payload = endpoint.parameters.map((param) =>
+      param.type === "string" ? "transcribe" : audioFile,
+    );
+
+    const response = await app.predict(endpoint.name, payload);
+    const segments = extractSegments(response.data);
+    return segmentsToResult(segments);
+  } catch {
+    // This space failed (down, cold start, auth) — the next one gets a shot.
+    return null;
+  }
+}
+
+/**
+ * Picks the audio-transcription endpoint from the space's API info instead of
+ * hardcoding /predict: prefer an endpoint named like "transcribe"/"predict"
+ * whose first parameter is the audio file, else any endpoint with a non-string
+ * first parameter.
+ */
+function pickTranscribeEndpoint(api: GradioApiInfo): { name: string; parameters: { label: string; type: string }[] } | null {
+  const entries = [
+    ...Object.entries(api.named_endpoints),
+    ...Object.entries(api.unnamed_endpoints),
+  ];
+  if (!entries.length) return null;
+
+  const audioFirst = entries.filter(
+    ([, ep]) => ep.parameters.length > 0 && ep.parameters[0].type !== "string",
+  );
+  const pool = audioFirst.length ? audioFirst : entries;
+
+  const preferred = pool.find(([name]) => /transcrib|predict/i.test(name));
+  const [name, ep] = preferred ?? pool[0];
+  return { name, parameters: ep.parameters ?? [] };
+}
+
+/**
+ * Normalizes a Whisper payload into timestamped segments. Spaces differ: some
+ * return (transcription, segments) tuples of [start, end, text] triples (or
+ * {start, end, text} objects), others return plain text only. Explicit
+ * segments are preferred; a bare string becomes a single segment at t=0.
+ */
+function extractSegments(data: unknown): GradioSegment[] {
+  const items = Array.isArray(data) ? data : [data];
+
+  // 1) A record carrying an explicit `segments` field (e.g. response.segments).
+  for (const item of items) {
+    if (item && typeof item === "object" && !Array.isArray(item)) {
+      const record = item as Record<string, unknown>;
+      const raw = record.segments;
+      if (Array.isArray(raw)) {
+        const mapped = raw
+          .map(toSegment)
+          .filter((seg): seg is GradioSegment => seg !== null);
+        if (mapped.length) return mapped;
+      }
+    }
+  }
+
+  // 2) An array of [start, end, text] triples / {start, end, text} objects.
+  for (const item of items) {
+    if (Array.isArray(item)) {
+      const mapped = item
+        .map(toSegment)
+        .filter((seg): seg is GradioSegment => seg !== null);
+      if (mapped.length) return mapped;
+    }
+  }
+
+  // 3) Fallback: plain text transcription becomes one segment starting at 0.
+  const text = items.find((item): item is string => typeof item === "string") ?? "";
+  return [{ start: 0, end: 0, text }];
+}
+
+/** Coerces a raw segment item (tuple or object) into a GradioSegment. */
+function toSegment(item: unknown): GradioSegment | null {
+  if (Array.isArray(item)) {
+    const [start, end, text] = item as unknown[];
+    if (typeof start === "number" && typeof end === "number" && typeof text === "string") {
+      return { start, end, text };
+    }
+    return null;
+  }
+  if (item && typeof item === "object") {
+    const record = item as Record<string, unknown>;
+    const text = typeof record.text === "string" ? record.text : "";
+    const start = typeof record.start === "number" ? record.start : 0;
+    const end = typeof record.end === "number" ? record.end : start;
+    const noSpeechProb =
+      typeof record.no_speech_prob === "number"
+        ? record.no_speech_prob
+        : typeof record.noSpeechProb === "number"
+          ? record.noSpeechProb
+          : undefined;
+    return { start, end, text, noSpeechProb };
+  }
+  return null;
+}
+
+/** Whisper voices pure silence / a bare tone as "." or "" — not lyrics. */
+function isBareText(text: string): boolean {
+  return text.length === 0 || /^[.\s]+$/.test(text);
+}
+
+/** Maps parsed segments into the standardized result (Tier 3 on no speech). */
+function segmentsToResult(segments: GradioSegment[]): WhisperTranscribeResult | null {
+  const useful = segments
+    .map((seg) => ({
+      start: Number.isFinite(seg.start) && seg.start >= 0 ? seg.start : 0,
+      end: Number.isFinite(seg.end) ? seg.end : seg.start,
+      text: seg.text.trim(),
+      noSpeechProb: seg.noSpeechProb,
+    }))
+    .filter(
+      (seg) =>
+        !isBareText(seg.text) &&
+        (seg.noSpeechProb === undefined || seg.noSpeechProb <= NO_SPEECH_THRESHOLD),
+    );
+
+  if (!useful.length) {
+    // Whisper returned zero usable segments — the audio has no detected speech.
+    return { synced: null, plain: null, isInstrumental: true };
+  }
+
+  // Standardized LRC array [{ timeInSeconds, text }] before building synced LRC.
+  const lrcLines = useful.map((seg) => ({ timeInSeconds: seg.start, text: seg.text }));
+  const lines: SrtLine[] = lrcLines.map((line) => ({
+    start: line.timeInSeconds,
+    end: line.timeInSeconds,
+    text: line.text,
+  }));
+
+  return {
+    synced: buildLrc(lines),
+    plain: captionsToPlain(lines),
+    isInstrumental: false,
+  };
+}
+
+/**
+ * Legacy keyed fallback: Groq's OpenAI-compatible transcriptions endpoint
+ * (verbose_json -> segments -> timed LRC lines). Only reached when a key env
+ * is set and the zero-key Gradio tier produced nothing.
+ */
+async function groqTranscribe(buffer: Buffer, apiKey: string): Promise<WhisperTranscribeResult | null> {
   const endpoint =
     process.env.AI_WHISPER_ENDPOINT || "https://api.groq.com/openai/v1/audio/transcriptions";
   const model = process.env.AI_WHISPER_MODEL || "whisper-large-v3";
 
   try {
-    const buffer = await fsp.readFile(mp3Path);
     const form = new FormData();
     form.append("model", model);
     form.append("response_format", "verbose_json");
-    form.append("file", new Blob([buffer]), "audio.mp3");
+    form.append("file", new Blob([new Uint8Array(buffer)]), "audio.mp3");
 
     const res = await fetch(endpoint, {
       method: "POST",
