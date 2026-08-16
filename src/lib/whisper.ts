@@ -68,13 +68,13 @@ interface GradioApiInfo {
 
 /** Public high-spec Whisper Spaces, tried in order (env-overridable). */
 const DEFAULT_WHISPER_SPACES = [
+  "hf-audio/whisper-large-v3-turbo",
   "openai/whisper",
   "hf-audio/whisper-large-v3",
-  "hf-audio/whisper-large-v3-turbo",
 ];
 
 /** Fail over to the next space when one is busy/queuing after this long. */
-const PER_SPACE_TIMEOUT_MS = 5000;
+const PER_SPACE_TIMEOUT_MS = 14000;
 
 /** Hard ceiling for the whole Tier 2 execution (Gradio + Groq). */
 const TOTAL_TIMEOUT_MS = 15000;

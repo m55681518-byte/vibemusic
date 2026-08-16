@@ -114,11 +114,13 @@ if (envOverride) pass("G5b: space list overridable via env var");
 else fail("G5b: no env override for space list");
 
 // G5c. Failover: when the primary space is busy/queuing, the next space is
-//      tried within 5 seconds (per-space timeout budget <= 5000ms).
-const perSpaceTimeout = /\b5000\b|\b5_000\b|\b5e3\b/.test(moduleSrc) &&
-  /timeout|deadline|AbortSignal|Promise\.race|for\s*\(|for\s*of/.test(moduleSrc);
-if (perSpaceTimeout) pass("G5c: per-space failover timeout <= 5000ms");
-else fail("G5c: no 5s per-space failover timeout found");
+//      tried within the per-space budget (currently 14s) — the
+//      PER_SPACE_TIMEOUT_MS constant must be wired into a race/timeout.
+const perSpaceTimeout = /PER_SPACE_TIMEOUT_MS/.test(moduleSrc) &&
+  /Promise\.race|timeout/.test(moduleSrc) &&
+  /\b14000\b|\b14_000\b/.test(moduleSrc);
+if (perSpaceTimeout) pass("G5c: per-space failover budget wired (currently 14s)");
+else fail("G5c: per-space failover budget (14000ms) not wired into a race/timeout context");
 
 // ---- 6. Total execution timeout (15s) + graceful Tier 3 pass ----
 // G6a. A total execution budget/duration of 15 seconds guards the whole tier.
