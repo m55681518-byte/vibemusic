@@ -53,7 +53,6 @@ function ExtractFlow() {
   const url = searchParams.get("url") || "";
 
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
-  const [showRawError, setShowRawError] = useState(false);
 
   useEffect(() => {
     if (phase.kind !== "working") return;
@@ -121,11 +120,7 @@ function ExtractFlow() {
           <h2>Couldn’t extract that link</h2>
           <p>{phase.message}</p>
           {phase.details && (
-            <details
-              className="error-details"
-              open={showRawError}
-              onToggle={(e) => setShowRawError(e.currentTarget.open)}
-            >
+            <details className="error-details" open>
               <summary>Raw error details</summary>
               <pre>{phase.details}</pre>
             </details>

@@ -35,6 +35,12 @@ const COBALT_INSTANCES: ReadonlyArray<CobaltInstance> = [
 // across the pool instead of hammering the first entry every time.
 let roundRobinIndex = 0;
 
+// A real desktop Chrome UA string. Some cobalt instances / CDN frontends 403
+// or bot-challenge requests that don't look like a browser, so both the API
+// POST and the tunnel download send this.
+export const BROWSER_USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
 export interface CobaltResult {
   audioUrl: string;
   title: string;
@@ -113,6 +119,9 @@ export async function getCobaltAudio(url: string): Promise<CobaltResult[]> {
         headers: {
           "Content-Type": "application/json",
           Accept: "application/json",
+          // Send a browser UA so instances / CDN frontends answer instead of
+          // rejecting the request with a 403 or bot challenge.
+          "User-Agent": BROWSER_USER_AGENT,
         },
         body: JSON.stringify({
           url,
@@ -124,15 +133,25 @@ export async function getCobaltAudio(url: string): Promise<CobaltResult[]> {
         signal: AbortSignal.timeout(30_000),
       });
 
-      const body = (await res.json()) as CobaltResponse;
+      // Surface the HTTP status (403/429/500) in the error label so the UI can
+      // say "Cobalt 403", then keep iterating the rest of the pool for a
+      // working instance.
+      if (!res.ok) {
+        lastError = new Error(
+          `Cobalt instance ${instance.baseUrl} failed with HTTP ${res.status}`,
+        );
+        continue;
+      }
 
-      if (body.status === "tunnel" && body.url) {
+      const body = (await res.json().catch(() => null)) as CobaltResponse | null;
+
+      if (body?.status === "tunnel" && body.url) {
         const { title, artist } = parseTitleArtist(body.filename ?? "");
         candidates.push({ audioUrl: body.url, title, artist });
       } else {
         lastError = new Error(
-          `Cobalt instance ${instance.baseUrl} returned status "${body.status}"` +
-            (body.error?.code ? `: ${body.error.code}` : ""),
+          `Cobalt instance ${instance.baseUrl} returned status "${body?.status ?? "unknown"}"` +
+            (body?.error?.code ? `: ${body.error.code}` : ""),
         );
       }
     } catch (err) {
