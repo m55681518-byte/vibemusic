@@ -111,8 +111,33 @@ interface LrclibHit {
   instrumental: boolean;
 }
 
+/**
+ * Ranks a title-only LRCLIB hit: exact trackName match first (the ORIGINAL
+ * track beats covers/edits), then synced lyrics, then a duration closest to
+ * the real audio duration. Higher is better.
+ */
+function rankTitleOnlyHit(
+  r: Record<string, unknown>,
+  titleLower: string,
+  actualDurationSec?: number,
+): number {
+  let score =
+    typeof r.trackName === "string" && r.trackName.toLowerCase() === titleLower
+      ? 1_000_000
+      : 0;
+  if (typeof r.syncedLyrics === "string" && r.syncedLyrics) score += 100_000;
+  if (typeof r.duration === "number" && actualDurationSec && actualDurationSec > 0) {
+    score -= Math.abs(r.duration - actualDurationSec);
+  }
+  return score;
+}
+
 /** Step 1 - LRCLIB time-synced lyrics (primary source). */
-async function lookupLrclib(artist: string, title: string): Promise<LrclibHit> {
+async function lookupLrclib(
+  artist: string,
+  title: string,
+  actualDurationSec?: number,
+): Promise<LrclibHit> {
   const a = encodeURIComponent(artist);
   const t = encodeURIComponent(title);
 
@@ -148,6 +173,42 @@ async function lookupLrclib(artist: string, title: string): Promise<LrclibHit> {
         duration: rec && typeof rec.duration === "number" ? rec.duration : null,
         instrumental: false,
       };
+    }
+  }
+
+  // TITLE-ONLY fallback: when the parsed artist is junk (cobalt names files
+  // like "BAILA LENTO (Slowed) - Release.mp3" → artist="Release"), the
+  // artist+title query above finds nothing even though the track exists on
+  // LRCLIB. Search by the CLEANED title alone and pick the best
+  // non-instrumental hit whose trackName contains the title.
+  const titleOnly = await getJson(`/search?q=${encodeURIComponent(title)}`);
+  const titleList = Array.isArray(titleOnly) ? titleOnly : [];
+  if (titleList.length) {
+    const titleLower = title.toLowerCase();
+    const usable = titleList
+      .map(asRecord)
+      .filter(
+        (r): r is Record<string, unknown> =>
+          r !== null &&
+          typeof r.trackName === "string" &&
+          !r.instrumental &&
+          r.trackName.toLowerCase().includes(titleLower),
+      )
+      .sort(
+        (a, b) =>
+          rankTitleOnlyHit(b, titleLower, actualDurationSec) -
+          rankTitleOnlyHit(a, titleLower, actualDurationSec),
+      );
+    const best = usable[0];
+    if (best) {
+      const hit = toResult(best);
+      if (hit) {
+        return {
+          hit,
+          duration: typeof best.duration === "number" ? best.duration : null,
+          instrumental: false,
+        };
+      }
     }
   }
   return { hit: null, duration: null, instrumental: false };
@@ -465,7 +526,7 @@ export async function lookupLyrics(
   if (!hasQuery && !id && !sourceUrl) return { synced: null, plain: null };
 
   if (hasQuery) {
-    const lrclib = await lookupLrclib(a, t);
+    const lrclib = await lookupLrclib(a, t, actualDurationSec);
     // LRCLIB reports the track as instrumental: no lyrics to find.
     if (lrclib.instrumental) return { synced: null, plain: null, isInstrumental: true };
     if (lrclib.hit) {

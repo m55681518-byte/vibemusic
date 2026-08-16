@@ -72,9 +72,43 @@ export interface MediaInfo {
   ext?: string;
 }
 
+/**
+ * Player-client variants tried IN ORDER for metadata lookup. The default
+ * client (-android_sdkless) hits YouTube's datacenter-IP sign-in wall
+ * ("Sign in to confirm you're not a bot" / "This video is private or requires
+ * a login"); the tv client (the YouTube-on-TV embedded player) is generally
+ * NOT blocked on server IPs, so it is the failover before any cobalt fallback.
+ */
+const PLAYER_CLIENT_VARIANTS: ReadonlyArray<readonly string[]> = [
+  ["--extractor-args", "youtube:player_client=default,-android_sdkless"],
+  ["--extractor-args", "youtube:player_client=tv"],
+];
+
 export async function getMediaInfo(url: string): Promise<MediaInfo> {
-  const raw = await instance().getVideoInfo(["--impersonate", "chrome", "--js-runtimes", "node", "--extractor-args", "youtube:player_client=default,-android_sdkless", "--downloader-args", "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5", "--no-playlist", "--no-warnings", url]);
-  return raw as MediaInfo;
+  const baseArgs = [
+    "--impersonate",
+    "chrome",
+    "--js-runtimes",
+    "node",
+    "--downloader-args",
+    "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+    "--no-playlist",
+    "--no-warnings",
+  ];
+  let lastError: unknown = null;
+  for (const clientArgs of PLAYER_CLIENT_VARIANTS) {
+    try {
+      const raw = await instance().getVideoInfo([...baseArgs, ...clientArgs, url]);
+      return raw as MediaInfo;
+    } catch (err) {
+      lastError = err;
+      console.warn(
+        "[ytdlp] getMediaInfo failed with one player client, trying the next:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 export async function extractAudioToFile(args: string[]): Promise<string> {
