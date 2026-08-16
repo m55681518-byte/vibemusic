@@ -143,6 +143,28 @@ export interface ExtractResult {
   cached: boolean;
 }
 
+const URL_IN_TEXT = /https?:\/\/[^\s"'<>]+/gi;
+
+/**
+ * Extracts the first valid http(s) URL from arbitrary text. Android share
+ * sheets append captions and punctuation to the link ("Check this out
+ * https://vt.tiktok.com/xyz", "…thanks!"), so the raw string is scanned for
+ * the first parseable http(s) URL and everything else is ignored. Returns
+ * null when no URL is present so callers can treat it as missing.
+ */
+export function extractValidUrl(input: string): string | null {
+  for (const match of input.matchAll(URL_IN_TEXT)) {
+    const candidate = match[0].replace(/[.,;:!?'")\]}]+$/, "");
+    try {
+      new URL(candidate);
+      return candidate;
+    } catch {
+      // Bare scheme (e.g. "https://") or malformed URL — keep scanning.
+    }
+  }
+  return null;
+}
+
 export function normalizeUrl(input: string): string {
   const trimmed = input.trim();
   if (

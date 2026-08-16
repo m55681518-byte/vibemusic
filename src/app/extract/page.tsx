@@ -8,7 +8,7 @@ type Phase =
   | { kind: "idle" }
   | { kind: "working"; step: string }
   | { kind: "done" }
-  | { kind: "error"; message: string };
+  | { kind: "error"; message: string; details?: string };
 
 const STEPS = [
   "Contacting extractor…",
@@ -21,19 +21,28 @@ const STEPS = [
 interface ExtractResult {
   id: string;
   error?: string;
+  details?: string;
   cached?: boolean;
   title?: string;
+}
+
+class ExtractError extends Error {
+  constructor(message: string, readonly details?: string) {
+    super(message);
+    this.name = "ExtractError";
+  }
 }
 
 async function runExtract(url: string): Promise<ExtractResult> {
   const res = await fetch("/api/extract", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    cache: "no-store",
     body: JSON.stringify({ url }),
   });
   const data = (await res.json().catch(() => null)) as ExtractResult | null;
   if (!res.ok || !data || !data.id) {
-    throw new Error(data?.error || `Server error (${res.status})`);
+    throw new ExtractError(data?.error || `Server error (${res.status})`, data?.details);
   }
   return data;
 }
@@ -44,6 +53,7 @@ function ExtractFlow() {
   const url = searchParams.get("url") || "";
 
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
+  const [showRawError, setShowRawError] = useState(false);
 
   useEffect(() => {
     if (phase.kind !== "working") return;
@@ -77,6 +87,7 @@ function ExtractFlow() {
         setPhase({
           kind: "error",
           message: err instanceof Error ? err.message : "Extraction failed.",
+          details: err instanceof ExtractError ? err.details : undefined,
         });
       }
     })();
@@ -109,6 +120,16 @@ function ExtractFlow() {
         <div className="error-box">
           <h2>Couldn’t extract that link</h2>
           <p>{phase.message}</p>
+          {phase.details && (
+            <details
+              className="error-details"
+              open={showRawError}
+              onToggle={(e) => setShowRawError(e.currentTarget.open)}
+            >
+              <summary>Raw error details</summary>
+              <pre>{phase.details}</pre>
+            </details>
+          )}
           <Link className="btn" href={`/extract?url=${encodeURIComponent(url || "https://")}`}>
             Try again
           </Link>
