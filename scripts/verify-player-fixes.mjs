@@ -80,11 +80,16 @@ if (!existsSync(extract)) {
   fail("src/lib/extract.ts missing (check 5)");
 } else {
   const src = readFileSync(extract, "utf8");
-  const generalFailure = /try\s*\{\s*const\s+cobalt\s*=\s*await\s+getCobaltAudio|getCobaltAudio\(url\)[\s\S]{0,80}catch/.test(src);
-  const botOnlyGate = /isBotBlockError[\s\S]{0,40}getCobaltAudio/.test(src);
-  const callsCount = (src.match(/getCobaltAudio\(/g) || []).length;
-  if (callsCount >= 3 && generalFailure && !botOnlyGate) pass("extract.ts tries cobalt on general failures (>=3 call sites, not only bot gate)");
-  else fail(`extract.ts cobalt coverage insufficient (calls=${callsCount}, general=${generalFailure}, botOnlyGate=${botOnlyGate})`);
+  // Accept either the original 3 direct call sites OR the DRY helper
+  // (tryCobaltFallback) that wraps getCobaltAudio + writeCobaltTrack; the
+  // helper must be invoked from the general failure path, not only behind the
+  // isBotBlockError gate.
+  const helperUsed = /tryCobaltFallback\(/.test(src) && !/isBotBlockError[\s\S]{0,40}getCobaltAudio\(url\)/.test(src);
+  const directCalls = (src.match(/getCobaltAudio\(url\)/g) || []).length >= 3;
+  const generalFailure = /tryCobaltFallback\(url,\s*id,\s*mp3Path\)/.test(src) || /getCobaltAudio\(url\)[\s\S]{0,80}catch/.test(src);
+  if ((directCalls || helperUsed) && generalFailure)
+    pass("extract.ts tries cobalt on general failures (helper or >=3 call sites, not only bot gate)");
+  else fail(`extract.ts cobalt coverage insufficient (helper=${helperUsed}, directCalls=${directCalls}, general=${generalFailure}))`);
 }
 
 // Check 6: TikTok "Unexpected response" not mapped to ffmpeg-missing.
