@@ -1,4 +1,5 @@
 import path from "node:path";
+import { promises as fsp } from "node:fs";
 import { existsSync } from "node:fs";
 import YTDlpWrap from "yt-dlp-wrap";
 
@@ -42,6 +43,65 @@ export async function getMediaInfo(url: string): Promise<MediaInfo> {
 
 export async function extractAudioToFile(args: string[]): Promise<string> {
   return instance().execPromise(args);
+}
+
+/**
+ * Downloads a video's auto-captions (YouTube timedtext) WITHOUT touching the
+ * audio/video stream — caption metadata + timedtext are served to datacenter
+ * IPs even when the media stream is 403-blocked, so this works where full
+ * extraction must fall back to cobalt.
+ *
+ * Writes `<videoId>.<lang>.srt` (converted, needs ffmpeg) or `<videoId>.<lang>.vtt`
+ * (raw) files into `outDir` and resolves with the full path of every file
+ * written. Never throws: yt-dlp frequently exits non-zero while still having
+ * produced usable caption files (no-captions warning, 429 mid-list, srt
+ * conversion needing ffmpeg), so failures are logged and whatever was written
+ * is read back. Callers treat an empty list as "no captions".
+ */
+export async function downloadAutoCaptions(url: string, outDir: string, videoId: string): Promise<string[]> {
+  // NOTE: `--sub-langs all` requests hundreds of machine-translation tracks and
+  // trips YouTube's timedtext burst limit (HTTP 429) before ANY file is written.
+  // Use an English-first curated list so the most likely captions are fetched
+  // first; later languages are best-effort if the burst limit allows.
+  const subsLangs =
+    "en,en-orig,es,es-419,pt,pt-BR,ja,ko,de,fr,it,ru,ar,hi,zh-Hans,zh-Hant,nl,pl,tr,id,th,vi,uk,he,fa,sv,no,da,fi,cs,el,hu,ro,ms,ta,te,bn,ur";
+  try {
+    await instance().execPromise(
+      [
+        "--impersonate",
+        "chrome",
+        "--extractor-args",
+        "youtube:player_client=default,-android_sdkless",
+        "--skip-download",
+        "--write-auto-subs",
+        "--sub-langs",
+        subsLangs,
+        "--convert-subs",
+        "srt",
+        "--no-playlist",
+        "--no-warnings",
+        "--no-progress",
+        "--output",
+        path.join(outDir, "%(id)s.%(ext)s"),
+        url,
+      ],
+      undefined,
+      AbortSignal.timeout(30_000),
+    );
+  } catch (err) {
+    console.warn(
+      "[ytdlp] caption download incomplete:",
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+  const names = await fsp.readdir(outDir).catch(() => [] as string[]);
+  return names
+    .filter(
+      (name) =>
+        name.startsWith(`${videoId}.`) && (name.endsWith(".srt") || name.endsWith(".vtt")),
+    )
+    .sort()
+    .map((name) => path.join(outDir, name));
 }
 
 export function humanizeExtractorError(err: unknown): string {
