@@ -46,7 +46,9 @@ export async function GET(req: NextRequest) {
   }
 
   // Tier 2/3 — Whisper speech-to-text fallback: only possible with an id so
-  // we can read the stored MP3. Quietly no-ops when no API key is configured.
+  // we can read the stored MP3. Runs zero-key against public Hugging Face
+  // Gradio spaces (with the optional keyed Groq path as a last resort) and
+  // quietly no-ops on any failure.
   if (id) {
     const mp3Path = mp3PathFor(id);
     if (await fileExists(mp3Path)) {
