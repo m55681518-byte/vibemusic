@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getTrackInfo } from "@/lib/extract";
+import { extractValidUrl, getTrackInfo } from "@/lib/extract";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -9,13 +9,20 @@ export async function POST(req: NextRequest) {
   let url: string | undefined;
   try {
     const body = (await req.json()) as { url?: unknown };
-    url = typeof body?.url === "string" ? body.url : undefined;
+    const raw = typeof body?.url === "string" ? body.url : "";
+    url = extractValidUrl(raw) ?? undefined;
   } catch {
     url = undefined;
   }
 
   if (!url) {
-    return NextResponse.json({ error: "Missing 'url' in request body." }, { status: 400 });
+    return NextResponse.json(
+      {
+        error: "Missing a valid URL in the request body.",
+        details: "No http(s) URL was found in the shared text.",
+      },
+      { status: 400 },
+    );
   }
 
   try {
@@ -34,6 +41,6 @@ export async function POST(req: NextRequest) {
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Extraction failed.";
-    return NextResponse.json({ error: message }, { status: 422 });
+    return NextResponse.json({ error: message, details: String(err) }, { status: 422 });
   }
 }
