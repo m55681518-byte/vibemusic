@@ -1,6 +1,7 @@
 import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { storageDir, isValidId } from "./store";
+import { downloadAutoCaptions } from "./ytdlp";
 
 const BASE = (process.env.LRCLIB_BASE_URL || "https://lrclib.net/api").replace(/\/$/, "");
 const GENIUS_SEARCH = "https://genius.com/api/search/song";
@@ -57,6 +58,22 @@ export function parseSrt(srt: string): SrtLine[] {
 
 export function captionsToPlain(captions: SrtLine[]): string {
   return captions.map((caption) => caption.text).join("\n");
+}
+
+/**
+ * Builds an LRC string ("[mm:ss.mmm] text" per line) from timed caption lines
+ * so the karaoke UI can render them in sync with playback.
+ */
+export function buildLrc(captions: SrtLine[]): string {
+  return captions
+    .map((caption) => {
+      const totalMs = Math.round(caption.start * 1000);
+      const m = Math.floor(totalMs / 60000);
+      const s = Math.floor((totalMs % 60000) / 1000);
+      const ms = totalMs % 1000;
+      return `[${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(ms).padStart(3, "0")}] ${caption.text}`;
+    })
+    .join("\n");
 }
 
 async function getJson(pathname: string): Promise<Record<string, unknown>[] | Record<string, unknown> | null> {
@@ -289,16 +306,84 @@ async function captionsForId(id: string): Promise<LyricsResult | null> {
   }
 }
 
+// --- Step 4 - onDemand platform auto-captions (fresh YouTube timedtext) ---
+
+const YOUTUBE_VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
+
+/** Extracts the 11-char video id from a YouTube / YouTube Music URL, else null. */
+function videoIdFromUrl(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url.trim());
+  } catch {
+    return null;
+  }
+  const host = parsed.hostname.replace(/^(?:www|m)\./, "").toLowerCase();
+  if (!["youtube.com", "music.youtube.com", "youtu.be", "youtube-nocookie.com"].includes(host)) {
+    return null;
+  }
+  if (host === "youtu.be") {
+    const id = parsed.pathname.replace(/^\/+/, "").split("/")[0];
+    return YOUTUBE_VIDEO_ID.test(id) ? id : null;
+  }
+  const v = parsed.searchParams.get("v");
+  if (v && YOUTUBE_VIDEO_ID.test(v)) return v;
+  const pathMatch = parsed.pathname.match(/\/(?:shorts|embed|live)\/([A-Za-z0-9_-]{11})/);
+  return pathMatch ? pathMatch[1] : null;
+}
+
+/**
+ * Fetches a video's auto-captions ON DEMAND (yt-dlp caption-only — timedtext
+ * is served to datacenter IPs even when the audio stream is 403-blocked) and
+ * returns them as synced LRC + plain text. Any failure (no captions, DRM,
+ * bot block, timeout, missing binary) resolves to null, never throws.
+ */
+async function fetchOnDemandCaptions(url: string): Promise<LyricsResult | null> {
+  const videoId = videoIdFromUrl(url);
+  if (!videoId) return null;
+  // Rebuild a clean watch URL so stray params (si=, list=, …) never leak in.
+  const cleanUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  try {
+    const dir = storageDir();
+    await fsp.mkdir(dir, { recursive: true });
+    const captionFiles = await downloadAutoCaptions(cleanUrl, dir, videoId);
+    if (!captionFiles.length) return null;
+    // Prefer converted .srt (ffmpeg present) over raw .vtt; among those,
+    // English captions first, else the first available language.
+    const byExt = [...captionFiles].sort(
+      (a, b) => Number(b.endsWith(".srt")) - Number(a.endsWith(".srt")),
+    );
+    const preferred = byExt.find((file) => /\.en(?:-|\.|$)/i.test(path.basename(file)));
+    const file = preferred ?? byExt[0];
+    const raw = await fsp.readFile(file, "utf8");
+    const captions = parseSrt(raw);
+    if (!captions.length) return null;
+    return { synced: buildLrc(captions), plain: captionsToPlain(captions) };
+  } catch (err) {
+    console.warn(
+      "[lyrics] on-demand caption fetch failed:",
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
+  }
+}
+
 /**
  * Waterfall: LRCLIB (synced) -> Genius public page (plain) -> stored
- * auto-captions for the track id (plain). `id` is optional so existing
- * artist/title-only callers keep working unchanged.
+ * auto-captions for the track id (plain) -> on-demand YouTube auto-captions
+ * (synced LRC). `id` and `sourceUrl` are optional so existing artist/title
+ * callers keep working unchanged.
  */
-export async function lookupLyrics(artist: string, title: string, id?: string): Promise<LyricsResult> {
+export async function lookupLyrics(
+  artist: string,
+  title: string,
+  id?: string,
+  sourceUrl?: string,
+): Promise<LyricsResult> {
   const a = artist.trim();
   const t = title.trim();
   const hasQuery = Boolean(a || t);
-  if (!hasQuery && !id) return { synced: null, plain: null };
+  if (!hasQuery && !id && !sourceUrl) return { synced: null, plain: null };
 
   if (hasQuery) {
     const lrclibHit = await lookupLrclib(a, t);
@@ -311,6 +396,11 @@ export async function lookupLyrics(artist: string, title: string, id?: string): 
   if (id) {
     const captionHit = await captionsForId(id);
     if (captionHit) return captionHit;
+  }
+
+  if (sourceUrl) {
+    const onDemandHit = await fetchOnDemandCaptions(sourceUrl);
+    if (onDemandHit) return onDemandHit;
   }
 
   return { synced: null, plain: null };
