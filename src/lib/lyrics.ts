@@ -14,6 +14,8 @@ const GENIUS_UA =
 export interface LyricsResult {
   synced: string | null;
   plain: string | null;
+  /** Present only when the track is confirmed instrumental (no vocals). */
+  isInstrumental?: boolean;
 }
 
 export interface SrtLine {
@@ -102,14 +104,27 @@ function toResult(item: unknown): LyricsResult | null {
   return null;
 }
 
+interface LrclibHit {
+  hit: LyricsResult | null;
+  /** Original track duration (seconds) reported by LRCLIB, for time rescaling. */
+  duration: number | null;
+  instrumental: boolean;
+}
+
 /** Step 1 - LRCLIB time-synced lyrics (primary source). */
-async function lookupLrclib(artist: string, title: string): Promise<LyricsResult | null> {
+async function lookupLrclib(artist: string, title: string): Promise<LrclibHit> {
   const a = encodeURIComponent(artist);
   const t = encodeURIComponent(title);
 
   const exact = await getJson(`/get?artist_name=${a}&track_name=${t}`);
-  const exactHit = exact && !Array.isArray(exact) ? toResult(exact) : null;
-  if (exactHit) return exactHit;
+  const exactRec = exact && !Array.isArray(exact) ? asRecord(exact) : null;
+  if (exactRec) {
+    const duration = typeof exactRec.duration === "number" ? exactRec.duration : null;
+    // LRCLIB flags instrumentals on the track record itself.
+    if (exactRec.instrumental === true) return { hit: null, duration, instrumental: true };
+    const hit = toResult(exactRec);
+    if (hit) return { hit, duration, instrumental: false };
+  }
 
   const q = encodeURIComponent(`${title} ${artist}`.trim());
   const list = await getJson(`/search?q=${q}`);
@@ -125,10 +140,17 @@ async function lookupLrclib(artist: string, title: string): Promise<LyricsResult
           (r.trackName.toLowerCase().includes(titleLower) || titleLower.includes(r.trackName.toLowerCase()))
         );
       }) || list[0];
+    const rec = asRecord(best);
     const hit = toResult(best);
-    if (hit) return hit;
+    if (hit) {
+      return {
+        hit,
+        duration: rec && typeof rec.duration === "number" ? rec.duration : null,
+        instrumental: false,
+      };
+    }
   }
-  return null;
+  return { hit: null, duration: null, instrumental: false };
 }
 
 // --- Genius (key-free public text-lyrics fallback) ---
@@ -369,25 +391,95 @@ async function fetchOnDemandCaptions(url: string): Promise<LyricsResult | null> 
 }
 
 /**
+ * Cleans artist/title for SEARCH only (display metadata stays untouched).
+ * Strips edition noise so the ORIGINAL track can be found on LRCLIB/Genius:
+ * "(Slowed + Reverb)", "[TikTok Edit]", "sped up", "remix", "nightcore",
+ * "#hashtags", "@usernames", "official video", trailing " - Single", and
+ * any bracketed/parenthesized decorations. Collapses internal whitespace.
+ */
+export function cleanTrackMetadata(artist: string, title: string): { artist: string; title: string } {
+  const clean = (raw: string): string =>
+    raw
+      .replace(/#\w+/g, " ") // #hashtags
+      .replace(/@\w+/g, " ") // @usernames
+      .replace(/\[[^\]]*\]/g, " ") // [bracketed] decorations
+      .replace(
+        /\(([^)]*(?:slowed|sped up|reverb|remix|nightcore|tiktok|tik tok|official|video|audio|lyric|edit|version|remaster|instrumental|feat)[^)]*)\)/gi,
+        " ",
+      )
+      .replace(
+        /\b(?:slowed|sped up|spedup|reverb|remix|nightcore|tiktok|tik tok)(?:\s*\+\s*(?:slowed|sped up|spedup|reverb|remix|nightcore|tiktok|tik tok))*/gi,
+        " ",
+      )
+      .replace(/\s+[-–—]\s*(?:single|remaster(?:ed)?|edit|version|official(?:\s+\w+)?)?\s*$/i, "")
+      .replace(
+        /\s+(?:official(?:\s+(?:music\s+)?video|audio|lyrics?)?|music\s+video|lyrics?|audio|edit|version|remaster(?:ed)?|single|explicit|hd|4k)\s*$/gi,
+        "",
+      )
+      .replace(/\s+/g, " ")
+      .trim();
+
+  return { artist: clean(artist), title: clean(title) };
+}
+
+const LRC_TIME_TAG = /\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
+
+/**
+ * Multiplies every [mm:ss.xx] timestamp in an LRC string by `ratio`
+ * (actualDuration / originalDuration) so slowed/sped-up audio stays in sync
+ * with the original synced lyrics. Non-time lines pass through untouched.
+ */
+export function rescaleLrc(lrc: string, ratio: number): string {
+  return lrc.replace(LRC_TIME_TAG, (whole, m, s, ms) => {
+    const fraction = (ms ?? "0").padEnd(3, "0").slice(0, 3);
+    const totalMs = Math.round((Number(m) * 60 + Number(s) + Number(fraction) / 1000) * 1000 * ratio);
+    const mm = Math.floor(totalMs / 60000);
+    const ss = Math.floor((totalMs % 60000) / 1000);
+    const milli = totalMs % 1000;
+    return `[${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}.${String(milli).padStart(3, "0")}]`;
+  });
+}
+
+/**
  * Waterfall: LRCLIB (synced) -> Genius public page (plain) -> stored
  * auto-captions for the track id (plain) -> on-demand YouTube auto-captions
  * (synced LRC). `id` and `sourceUrl` are optional so existing artist/title
- * callers keep working unchanged.
+ * callers keep working unchanged. `actualDurationSec` is the real duration of
+ * the stored MP3 (from metadata or ffprobe); when it differs from the
+ * ORIGINAL track's LRCLIB duration, synced timestamps are rescaled by
+ * ratio = actual / original so slowed/sped-up audio stays in sync.
  */
 export async function lookupLyrics(
   artist: string,
   title: string,
   id?: string,
   sourceUrl?: string,
+  actualDurationSec?: number,
 ): Promise<LyricsResult> {
-  const a = artist.trim();
-  const t = title.trim();
+  // Search with CLEANED names for the ORIGINAL track; the caller keeps the
+  // raw artist/title for display.
+  const cleaned = cleanTrackMetadata(artist, title);
+  const a = cleaned.artist;
+  const t = cleaned.title;
   const hasQuery = Boolean(a || t);
   if (!hasQuery && !id && !sourceUrl) return { synced: null, plain: null };
 
   if (hasQuery) {
-    const lrclibHit = await lookupLrclib(a, t);
-    if (lrclibHit) return lrclibHit;
+    const lrclib = await lookupLrclib(a, t);
+    // LRCLIB reports the track as instrumental: no lyrics to find.
+    if (lrclib.instrumental) return { synced: null, plain: null, isInstrumental: true };
+    if (lrclib.hit) {
+      let { synced, plain } = lrclib.hit;
+      // Time-scale normalization: when both durations are known and differ
+      // by more than 2%, rescale every timestamp by ratio = actual / original.
+      if (synced && actualDurationSec && lrclib.duration) {
+        const ratio = actualDurationSec / lrclib.duration;
+        if (Number.isFinite(ratio) && ratio > 0.3 && ratio < 3.0 && Math.abs(ratio - 1) > 0.02) {
+          synced = rescaleLrc(synced, ratio);
+        }
+      }
+      return { synced, plain };
+    }
 
     const geniusPlain = await searchGenius(a, t);
     if (geniusPlain) return { synced: null, plain: geniusPlain };

@@ -55,6 +55,7 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
   const [synced, setSynced] = useState<{ time: number; text: string }[] | null>(null);
   const [plain, setPlain] = useState<string | null>(null);
   const [hasLyrics, setHasLyrics] = useState(false);
+  const [isInstrumental, setIsInstrumental] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
 
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -63,6 +64,7 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
     setSynced(null);
     setPlain(null);
     setHasLyrics(false);
+    setIsInstrumental(false);
     setActiveIndex(-1);
   }, []);
 
@@ -107,9 +109,13 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
             const lyrics = (await lyricsRes.json()) as {
               synced?: string | null;
               plain?: string | null;
+              isInstrumental?: boolean;
             };
             if (cancelled) return;
-            if (lyrics.synced) {
+            if (lyrics.isInstrumental) {
+              // Track is confirmed instrumental — show the beats-only state.
+              setIsInstrumental(true);
+            } else if (lyrics.synced) {
               setSynced(parseLrc(lyrics.synced));
               setHasLyrics(true);
             } else if (lyrics.plain) {
@@ -177,6 +183,20 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
               <span>♪</span>
             </div>
           )}
+          {isInstrumental && (
+            <div className="cover-overlay" aria-hidden="true">
+              <div className="eq-bars">
+                <span className="eq-bar" />
+                <span className="eq-bar" />
+                <span className="eq-bar" />
+                <span className="eq-bar" />
+                <span className="eq-bar" />
+                <span className="eq-bar" />
+                <span className="eq-bar" />
+              </div>
+              <span className="instrumental-badge">Instrumental / Beats Only</span>
+            </div>
+          )}
         </div>
 
         <div className="cp-meta">
@@ -213,7 +233,15 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
         )}
       </section>
 
-      <LyricsView synced={hasLyrics ? synced : null} plain={hasLyrics ? plain : null} activeIndex={activeIndex} />
+      {isInstrumental ? (
+        // Instrumental tracks have no lyrics section — the visualizer + badge
+        // over the cover art communicates the beats-only state instead.
+        <section className="lyrics-empty" aria-label="Instrumental track">
+          <p className="muted">No vocals — instrumental beat only.</p>
+        </section>
+      ) : (
+        <LyricsView synced={hasLyrics ? synced : null} plain={hasLyrics ? plain : null} activeIndex={activeIndex} />
+      )}
 
       <p className="player-foot muted">
         <Link href="/">Extract another track</Link>

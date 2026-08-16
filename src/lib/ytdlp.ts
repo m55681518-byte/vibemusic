@@ -1,7 +1,11 @@
 import path from "node:path";
 import { promises as fsp } from "node:fs";
 import { existsSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import YTDlpWrap from "yt-dlp-wrap";
+
+const execFileAsync = promisify(execFile);
 
 let wrapper: YTDlpWrap | null = null;
 
@@ -14,6 +18,38 @@ export function ytdlpBinaryPath(): string {
   );
   if (existsSync(vendor)) return vendor;
   return "yt-dlp";
+}
+
+function ffprobeBinaryPath(): string {
+  if (process.env.FFPROBE_PATH) return process.env.FFPROBE_PATH;
+  const vendor = path.join(
+    process.cwd(),
+    "vendor",
+    process.platform === "win32" ? "ffprobe.exe" : "ffprobe",
+  );
+  if (existsSync(vendor)) return vendor;
+  return "ffprobe";
+}
+
+/**
+ * Reads the REAL duration (seconds) of a stored audio file by probing it with
+ * ffprobe. Used when extract-time metadata has no duration (e.g. cobalt
+ * tracks). Returns null on ANY failure — ffprobe missing, unreadable file,
+ * malformed output — so callers can fall back to the original timestamps.
+ * `meta.duration` (seconds) is preferred over probing when present.
+ */
+export async function probeAudioDuration(mp3Path: string): Promise<number | null> {
+  try {
+    const { stdout } = await execFileAsync(
+      ffprobeBinaryPath(),
+      ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", mp3Path],
+      { timeout: 15_000 },
+    );
+    const sec = Number(String(stdout).trim());
+    return Number.isFinite(sec) && sec > 0 ? sec : null;
+  } catch {
+    return null;
+  }
 }
 
 function instance(): YTDlpWrap {
