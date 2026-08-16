@@ -7,6 +7,11 @@
 const COBALT_INSTANCES = [
   "https://dog.kittycat.boo",
   "https://cobaltapi.kittycat.boo",
+  // Official instance (api.cobalt.tools). It answers HTTP but now requires a
+  // JWT/API key for direct API access, so it fails fast with a clear error
+  // code while the community instances above carry the load — it is kept so
+  // the redundancy list has a stable third, confirmed-reachable endpoint.
+  "https://api.cobalt.tools",
 ];
 
 export interface CobaltResult {

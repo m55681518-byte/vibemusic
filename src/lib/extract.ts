@@ -3,6 +3,7 @@ import { promises as fsp } from "node:fs";
 import {
   getMediaInfo,
   extractAudioToFile,
+  probeAudioDuration,
   humanizeExtractorError,
 } from "./ytdlp";
 import { getCobaltAudio, deriveThumbnailUrl, type CobaltResult } from "./cobalt";
@@ -20,6 +21,18 @@ import {
 
 const COBALT_MAX_ATTEMPTS = 3;
 const COBALT_RETRY_BACKOFF_MS = 2000;
+
+/**
+ * Player-client variants tried IN ORDER for the yt-dlp download. The default
+ * client (-android_sdkless) hits YouTube's datacenter-IP sign-in wall
+ * ("Sign in to confirm you're not a bot" / "This video is private or requires
+ * a login"); the tv client (YouTube's embedded-TV player) is generally NOT
+ * blocked on server IPs, so it is the failover before cobalt is ever tried.
+ */
+const CLIENT_VARIANTS: ReadonlyArray<readonly string[]> = [
+  ["--extractor-args", "youtube:player_client=default,-android_sdkless"],
+  ["--extractor-args", "youtube:player_client=tv"],
+];
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -59,13 +72,25 @@ async function writeCobaltTrack(
         continue;
       }
       await fsp.writeFile(mp3Path, buffer);
+      // ffprobe-verify BEFORE persisting: a truncated/unverifiable mp3 would
+      // "play partly then stop" on the client. Refuse it (delete + try the
+      // next candidate) so a broken track is never saved or served, and store
+      // the REAL probed duration for /api/lyrics timestamp rescaling.
+      const probedDuration = await probeAudioDuration(mp3Path);
+      if (probedDuration === null) {
+        await fsp.unlink(mp3Path).catch(() => undefined);
+        lastError = new Error(
+          `Cobalt audio for ${cobalt.audioUrl} is not playable (ffprobe verification failed)`,
+        );
+        continue;
+      }
       const track: TrackMeta = {
         id,
         url,
         title: cobalt.title,
         artist: cobalt.artist,
         album: undefined,
-        duration: undefined,
+        duration: probedDuration,
         thumbnail: deriveThumbnailUrl(url),
         webpageUrl: url,
         extractor: "cobalt",
@@ -191,8 +216,6 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
     "chrome",
     "--js-runtimes",
     "node",
-    "--extractor-args",
-    "youtube:player_client=default,-android_sdkless",
     "--downloader-args",
     "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
     "-f",
@@ -211,38 +234,48 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
     "--output",
     outTemplate,
   ];
-  const runAttempt = (extra: string[]) => extractAudioToFile([...base, ...extra, url]);
+  const runAttempt = (extra: string[], clientArgs: readonly string[]) =>
+    extractAudioToFile([...base, ...clientArgs, ...extra, url]);
 
   let extractError: unknown = null;
-  try {
-    await runAttempt([
-      "--extract-audio",
-      "--audio-format",
-      "mp3",
-      "--audio-quality",
-      "0",
-      "--embed-thumbnail",
-      "--add-metadata",
-    ]);
-  } catch (err) {
-    extractError = err;
+  let probedDuration: number | null = null;
+  // Try every player client (default first, then tv) so a single blocked
+  // client never kills the whole request; after each variant ffprobe-verify
+  // the written file and only accept one that really plays.
+  for (const clientArgs of CLIENT_VARIANTS) {
     try {
-      await runAttempt(["--extract-audio", "--audio-format", "mp3"]);
-    } catch (err2) {
-      extractError = err2;
+      await runAttempt(
+        [
+          "--extract-audio",
+          "--audio-format",
+          "mp3",
+          "--audio-quality",
+          "0",
+          "--embed-thumbnail",
+          "--add-metadata",
+        ],
+        clientArgs,
+      );
+    } catch (err) {
+      extractError = err;
+      try {
+        await runAttempt(["--extract-audio", "--audio-format", "mp3"], clientArgs);
+      } catch (err2) {
+        extractError = err2;
+      }
     }
+    // The real acceptance test: ffprobe the stored file. A truncated/empty/
+    // unverifiable mp3 would "play partly then stop" on the client, so a
+    // failed probe deletes the file and falls through to the next client.
+    probedDuration = await probeAudioDuration(mp3Path);
+    if (probedDuration !== null) break;
+    await fsp.unlink(mp3Path).catch(() => undefined);
   }
 
-  if (extractError || !(await fileExists(mp3Path))) {
+  if (probedDuration === null) {
     console.error("[extract] yt-dlp error:", extractError instanceof Error ? extractError.message : String(extractError));
     if (isBotBlockError(extractError)) {
       console.error("[extract] yt-dlp bot block, trying cobalt fallback");
-      try {
-        const track = await tryCobaltFallback(url, id, mp3Path);
-        return { track, cached: false };
-      } catch (cobaltErr) {
-        console.error("[extract] cobalt fallback failed:", cobaltErr instanceof Error ? cobaltErr.message : String(cobaltErr));
-      }
     }
     // General extractor failure (e.g. TikTok "Unexpected response from webpage
     // request") gets the cobalt fallback too, as a last resort.
@@ -265,7 +298,9 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
     title,
     artist,
     album: info?.album,
-    duration: info?.duration,
+    // Real, probed duration (ffprobe on the stored file) — feeds /api/lyrics
+    // timestamp rescaling for slowed/sped-up variants.
+    duration: probedDuration ?? info?.duration,
     thumbnail: info?.thumbnail,
     webpageUrl: info?.webpage_url,
     extractor: info?.extractor,
