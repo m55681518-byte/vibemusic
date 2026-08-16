@@ -20,7 +20,12 @@
 import path from "node:path";
 import { promises as fsp } from "node:fs";
 import { probeAudioDuration } from "./ytdlp";
-import { getCobaltAudio, deriveThumbnailUrl, type CobaltResult } from "./cobalt";
+import {
+  getCobaltAudio,
+  deriveThumbnailUrl,
+  BROWSER_USER_AGENT,
+  type CobaltResult,
+} from "./cobalt";
 import {
   storageDir,
   idForUrl,
@@ -157,9 +162,27 @@ async function writeCobaltTrack(
 ): Promise<TrackMeta> {
   let lastError: unknown = null;
 
+  // CDNs (e.g. googlevideo redirect targets) 403 or serve blocked HTML to
+  // requests that look like a bare server, so the download must look like a
+  // real desktop Chrome tab: full browser UA, a source-origin Referer, and an
+  // Accept header that asks for audio first.
+  let referer = "https://www.youtube.com/";
+  try {
+    referer = new URL(url).origin + "/";
+  } catch {
+    // url is normalized upstream; fall back to the YouTube default above.
+  }
+
   for (const cobalt of candidates) {
     try {
-      const response = await fetch(cobalt.audioUrl, { signal: AbortSignal.timeout(120_000) });
+      const response = await fetch(cobalt.audioUrl, {
+        headers: {
+          "User-Agent": BROWSER_USER_AGENT,
+          Referer: referer,
+          Accept: "audio/*,*/*;q=0.9",
+        },
+        signal: AbortSignal.timeout(120_000),
+      });
       if (!response.ok) throw new Error(`Cobalt download failed: ${response.status}`);
       const buffer = Buffer.from(await response.arrayBuffer());
       // Refuse empty tunnel bodies: skip to the next candidate instead of
