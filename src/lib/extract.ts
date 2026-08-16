@@ -5,11 +5,12 @@ import {
   extractAudioToFile,
   humanizeExtractorError,
 } from "./ytdlp";
-import { getCobaltAudio, deriveThumbnailUrl } from "./cobalt";
+import { getCobaltAudio, deriveThumbnailUrl, type CobaltResult } from "./cobalt";
 import {
   storageDir,
   idForUrl,
   mp3PathFor,
+  metaPathFor,
   saveMeta,
   loadMeta,
   fileExists,
@@ -25,33 +26,58 @@ function isBotBlockError(err: unknown): boolean {
 /**
  * Downloads the cobalt-provided audio, writes it to disk, and builds a TrackMeta
  * with a derived cover thumbnail (YouTube/TikTok) so cobalt tracks show art.
+ *
+ * Candidates arrive in COBALT_INSTANCES order; the FIRST tunnel that yields
+ * real bytes wins. A tunnel whose body is empty (0 bytes) is the cobalt
+ * empty-tunnel bug — it must never be written to disk nor saved in meta, so we
+ * skip it and try the next instance's tunnel instead.
  */
 async function writeCobaltTrack(
   url: string,
   id: string,
   mp3Path: string,
-  cobalt: Awaited<ReturnType<typeof getCobaltAudio>>,
+  candidates: CobaltResult[],
 ): Promise<TrackMeta> {
-  const response = await fetch(cobalt.audioUrl, { signal: AbortSignal.timeout(120_000) });
-  if (!response.ok) throw new Error(`Cobalt download failed: ${response.status}`);
-  const buffer = Buffer.from(await response.arrayBuffer());
-  await fsp.writeFile(mp3Path, buffer);
-  const track: TrackMeta = {
-    id,
-    url,
-    title: cobalt.title,
-    artist: cobalt.artist,
-    album: undefined,
-    duration: undefined,
-    thumbnail: deriveThumbnailUrl(url),
-    webpageUrl: url,
-    extractor: "cobalt",
-    mp3Path,
-    sizeBytes: buffer.length,
-    createdAt: Date.now(),
-  };
-  await saveMeta(track);
-  return track;
+  let lastError: unknown = null;
+
+  for (const cobalt of candidates) {
+    try {
+      const response = await fetch(cobalt.audioUrl, { signal: AbortSignal.timeout(120_000) });
+      if (!response.ok) throw new Error(`Cobalt download failed: ${response.status}`);
+      const buffer = Buffer.from(await response.arrayBuffer());
+      // Refuse empty tunnel bodies: skip to the next candidate instead of
+      // persisting a 0-byte mp3 + meta that /api/audio can never play.
+      if (!buffer.length) {
+        lastError = new Error(`Cobalt tunnel for ${cobalt.audioUrl} yielded 0 bytes`);
+        continue;
+      }
+      await fsp.writeFile(mp3Path, buffer);
+      const track: TrackMeta = {
+        id,
+        url,
+        title: cobalt.title,
+        artist: cobalt.artist,
+        album: undefined,
+        duration: undefined,
+        thumbnail: deriveThumbnailUrl(url),
+        webpageUrl: url,
+        extractor: "cobalt",
+        mp3Path,
+        sizeBytes: buffer.length,
+        createdAt: Date.now(),
+      };
+      await saveMeta(track);
+      return track;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  throw new Error(
+    `Cobalt download failed for all instances. Last error: ${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`,
+  );
 }
 
 const singleFlight = new Map<string, Promise<ExtractResult>>();
@@ -78,7 +104,15 @@ export async function getTrackInfo(rawUrl: string): Promise<ExtractResult> {
 
   const existing = await loadMeta(id);
   if (existing && (await fileExists(existing.mp3Path))) {
-    return { track: existing, cached: true };
+    // A cached file that exists but is 0 bytes is the cobalt empty-tunnel bug:
+    // never serve it as a valid track — delete the stale file/meta and
+    // re-extract so the real audio replaces it.
+    const stat = await fsp.stat(existing.mp3Path).catch(() => null);
+    if (stat && stat.size > 0 && existing.sizeBytes > 0) {
+      return { track: existing, cached: true };
+    }
+    await fsp.unlink(existing.mp3Path).catch(() => undefined);
+    await fsp.unlink(metaPathFor(id)).catch(() => undefined);
   }
 
   const pending = singleFlight.get(url);
