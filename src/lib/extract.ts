@@ -18,6 +18,13 @@ import {
   type TrackMeta,
 } from "./store";
 
+const COBALT_MAX_ATTEMPTS = 3;
+const COBALT_RETRY_BACKOFF_MS = 2000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function isBotBlockError(err: unknown): boolean {
   const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
   return /sign in to confirm|not a bot|bot|403|request blocked|captcha|private/i.test(message);
@@ -78,6 +85,30 @@ async function writeCobaltTrack(
       lastError instanceof Error ? lastError.message : String(lastError)
     }`,
   );
+}
+
+async function tryCobaltFallback(
+  url: string,
+  id: string,
+  mp3Path: string,
+): Promise<TrackMeta> {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= COBALT_MAX_ATTEMPTS; attempt++) {
+    try {
+      const cobalt = await getCobaltAudio(url);
+      return await writeCobaltTrack(url, id, mp3Path, cobalt);
+    } catch (err) {
+      lastError = err;
+      if (attempt < COBALT_MAX_ATTEMPTS) {
+        console.error(
+          `[extract] cobalt fallback attempt ${attempt}/${COBALT_MAX_ATTEMPTS} failed, retrying in ${COBALT_RETRY_BACKOFF_MS}ms:`,
+          err instanceof Error ? err.message : String(err),
+        );
+        await sleep(COBALT_RETRY_BACKOFF_MS);
+      }
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 const singleFlight = new Map<string, Promise<ExtractResult>>();
@@ -141,8 +172,7 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
     // Last resort on ANY extractor failure (bot block, TikTok "Unexpected
     // response", etc.): try the cobalt fallback before surfacing the error.
     try {
-      const cobalt = await getCobaltAudio(url);
-      const track = await writeCobaltTrack(url, id, mp3Path, cobalt);
+      const track = await tryCobaltFallback(url, id, mp3Path);
       return { track, cached: false };
     } catch (cobaltErr) {
       console.error("[extract] cobalt fallback failed:", cobaltErr instanceof Error ? cobaltErr.message : String(cobaltErr));
@@ -208,8 +238,7 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
     if (isBotBlockError(extractError)) {
       console.error("[extract] yt-dlp bot block, trying cobalt fallback");
       try {
-        const cobalt = await getCobaltAudio(url);
-        const track = await writeCobaltTrack(url, id, mp3Path, cobalt);
+        const track = await tryCobaltFallback(url, id, mp3Path);
         return { track, cached: false };
       } catch (cobaltErr) {
         console.error("[extract] cobalt fallback failed:", cobaltErr instanceof Error ? cobaltErr.message : String(cobaltErr));
@@ -218,8 +247,7 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
     // General extractor failure (e.g. TikTok "Unexpected response from webpage
     // request") gets the cobalt fallback too, as a last resort.
     try {
-      const cobalt = await getCobaltAudio(url);
-      const track = await writeCobaltTrack(url, id, mp3Path, cobalt);
+      const track = await tryCobaltFallback(url, id, mp3Path);
       return { track, cached: false };
     } catch (cobaltErr) {
       console.error("[extract] cobalt fallback failed:", cobaltErr instanceof Error ? cobaltErr.message : String(cobaltErr));
