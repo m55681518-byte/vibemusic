@@ -9,7 +9,7 @@ const COBALT_INSTANCES = [
   "https://cobaltapi.kittycat.boo",
 ];
 
-interface CobaltResult {
+export interface CobaltResult {
   audioUrl: string;
   title: string;
   artist: string;
@@ -64,7 +64,17 @@ function parseTitleArtist(filename: string): { title: string; artist: string } {
   return { title: base || "Unknown", artist: "Unknown artist" };
 }
 
-export async function getCobaltAudio(url: string): Promise<CobaltResult> {
+/**
+ * Queries every cobalt instance and returns ALL tunnel candidates in
+ * COBALT_INSTANCES order. Deliberately NOT return-on-first-tunnel: some
+ * instances (e.g. dog.kittycat.boo) serve a tunnel URL whose body is EMPTY
+ * (HTTP 200, 0 bytes), so the caller must download each candidate and only
+ * accept one that actually yields bytes — falling through to the next
+ * instance's tunnel when a body comes back empty. Throws only when no
+ * instance returned a tunnel at all.
+ */
+export async function getCobaltAudio(url: string): Promise<CobaltResult[]> {
+  const candidates: CobaltResult[] = [];
   let lastError: unknown = null;
 
   for (const instance of COBALT_INSTANCES) {
@@ -88,21 +98,25 @@ export async function getCobaltAudio(url: string): Promise<CobaltResult> {
 
       if (body.status === "tunnel" && body.url) {
         const { title, artist } = parseTitleArtist(body.filename ?? "");
-        return { audioUrl: body.url, title, artist };
+        candidates.push({ audioUrl: body.url, title, artist });
+      } else {
+        lastError = new Error(
+          `Cobalt instance ${instance} returned status "${body.status}"` +
+            (body.error?.code ? `: ${body.error.code}` : ""),
+        );
       }
-
-      lastError = new Error(
-        `Cobalt instance ${instance} returned status "${body.status}"` +
-          (body.error?.code ? `: ${body.error.code}` : ""),
-      );
     } catch (err) {
       lastError = err;
     }
   }
 
-  throw new Error(
-    `All Cobalt instances failed. Last error: ${
-      lastError instanceof Error ? lastError.message : String(lastError)
-    }`,
-  );
+  if (candidates.length === 0) {
+    throw new Error(
+      `All Cobalt instances failed. Last error: ${
+        lastError instanceof Error ? lastError.message : String(lastError)
+      }`,
+    );
+  }
+
+  return candidates;
 }
