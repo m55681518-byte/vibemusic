@@ -8,20 +8,32 @@
 //   This breaks Tier 1/2 lyrics search: the app searches LRCLIB/Genius with
 //   hashtag text instead of the actual track name.
 //
+// TikWM RESPONSE SHAPE (important): in www.tikwm.com/api responses,
+//   data.music        = STRING audio URL of the background track
+//   data.music_info   = OBJECT holding the music track's real metadata:
+//                       { title, author, play, cover }
+//   data.title        = video caption (contains hashtags)
+//   data.author       = video creator { nickname, unique_id }
+//   data.play         = raw video audio (contains voiceovers)
+//   data.cover        = video thumbnail
+//
 // FIX DESIGN (required — implemented in src/lib/extract.ts):
-// 1. In `writeTikTokTrack`, map metadata with explicit priority:
-//    - title:  data.music_info?.title  ►  data.music?.title  ►  data.title
-//    - artist: data.music_info?.author ►  data.music?.author ►
-//              data.author?.nickname   ►  data.author?.unique_id ► "Unknown artist"
-//    - cover:  data.music_info?.cover  ►  data.music?.cover    ►  data.cover
-// 2. audioUrl priority: data.music_info?.play ► data.music ► data.play
-//    (official background track over raw video audio).
-// 3. "Original sound" clean fallback: when the resolved music title looks like
-//    a generic TikTok audio name (starts with "original sound -", "som
-//    original -", or contains "sound created by"), run cleanTrackMetadata on
-//    the combined generic-title + video-caption text to extract a real
-//    "Artist - Song Name" pair; use those cleaned values when they produce a
-//    distinct artist/title.
+// 1. Map metadata with explicit priority:
+//    - title:  data.music_info.title   ►  data.title          (caption)
+//    - artist: data.music_info.author  ►  data.author.nickname ►
+//              data.author.unique_id   ► "Unknown artist"
+//    - cover:  data.music_info.cover   ►  data.cover
+//    - audioUrl: data.music_info.play  ►  data.music (string) ► data.play
+// 2. "Original sound" clean fallback: when the resolved music title looks like
+//    a generic TikTok audio name (starts with "original sound -",
+//    "som original -", or contains "sound created by"), feed the COMBINED
+//    generic-title + video-caption text through cleanTrackMetadata to attempt
+//    to extract a real "Artist - Song Name" pair; use the cleaned values when
+//    they yield a distinct artist/title. (Note: data.music is a URL string in
+//    TikWM, so its real title lives in data.music_info.title — the fallback
+//    applies when THAT title is generic.)
+// 3. Keep the 403 header spoofing + cobalt fallback + isTikTokUrl routing
+//    completely unchanged.
 //
 // GB checks FAIL against baseline 83e2f5d and PASS after the fix.
 // GP checks are regression guards and must stay PASS.
@@ -40,40 +52,34 @@ const fail = (m) => { console.log("FAIL", m); failed++; };
 
 const extract = read(resolve(root, "src/lib/extract.ts"));
 
-// ---- GB1: title priority: data.music_info.title > data.music.title > data.title ----
+// ---- GB1: title priority: data.music_info.title > data.title (caption) ----
 {
   if (/async function writeTikTokTrack/.test(extract)) pass("GB1: writeTikTokTrack function present in source");
   else fail("GB1: writeTikTokTrack function missing from source");
   if (/data\.music_info\??\.title/.test(extract)) pass("GB1: data.music_info.title reference present");
   else fail("GB1: data.music_info.title reference missing from source");
-  if (/data\.music\??\.title/.test(extract)) pass("GB1: data.music.title reference present");
-  else fail("GB1: data.music.title reference missing from source");
-  if (/data\.title/.test(extract)) pass("GB1: data.title fallback reference present");
+  if (/data\.title/.test(extract)) pass("GB1: data.title (caption) fallback reference present");
   else fail("GB1: data.title fallback reference missing from source");
 }
 
-// ---- GB2: artist priority: data.music_info.author > data.music.author > data.author.nickname > data.author.unique_id ----
+// ---- GB2: artist priority: music_info.author > author.nickname > author.unique_id ----
 {
   if (/async function writeTikTokTrack/.test(extract)) pass("GB2: writeTikTokTrack function present in source");
   else fail("GB2: writeTikTokTrack function missing from source");
   if (/data\.music_info\??\.author/.test(extract)) pass("GB2: data.music_info.author reference present");
   else fail("GB2: data.music_info.author reference missing from source");
-  if (/data\.music\??\.author/.test(extract)) pass("GB2: data.music.author reference present");
-  else fail("GB2: data.music.author reference missing from source");
   if (/data\.author\??\.nickname/.test(extract)) pass("GB2: data.author.nickname fallback reference present");
   else fail("GB2: data.author.nickname fallback reference missing from source");
   if (/data\.author\??\.unique_id/.test(extract)) pass("GB2: data.author.unique_id fallback reference present");
   else fail("GB2: data.author.unique_id fallback reference missing from source");
 }
 
-// ---- GB3: cover priority: data.music_info.cover > data.music.cover > data.cover ----
+// ---- GB3: cover priority: data.music_info.cover > data.cover ----
 {
   if (/async function writeTikTokTrack/.test(extract)) pass("GB3: writeTikTokTrack function present in source");
   else fail("GB3: writeTikTokTrack function missing from source");
   if (/data\.music_info\??\.cover/.test(extract)) pass("GB3: data.music_info.cover reference present");
   else fail("GB3: data.music_info.cover reference missing from source");
-  if (/data\.music\??\.cover/.test(extract)) pass("GB3: data.music.cover reference present");
-  else fail("GB3: data.music.cover reference missing from source");
   if (/data\.cover/.test(extract)) pass("GB3: data.cover fallback reference present");
   else fail("GB3: data.cover fallback reference missing from source");
 }
