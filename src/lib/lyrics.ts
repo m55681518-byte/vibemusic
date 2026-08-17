@@ -492,6 +492,23 @@ async function fetchOnDemandCaptions(url: string): Promise<LyricsResult | null> 
 }
 
 /**
+ * Strips a leading "{artist} - " prefix from the title (case-insensitive).
+ * YT Music video titles embed the artist before the track name ("Ari Abdul -
+ * BABYDOLL (Lyric Video)"), so without this the LRCLIB search key becomes
+ * "Ari Abdul - BABYDOLL" and the exact /get lookup never fires. Only strips
+ * when artist is non-empty and the title actually starts with the prefix;
+ * otherwise the title is returned unchanged (trimmed when stripped).
+ */
+export function stripArtistTitlePrefix(artist: string, title: string): string {
+  if (!artist) return title;
+  const prefix = `${artist} - `;
+  if (title.toLowerCase().startsWith(prefix.toLowerCase())) {
+    return title.slice(prefix.length).trim();
+  }
+  return title;
+}
+
+/**
  * Cleans artist/title for SEARCH only (display metadata stays untouched).
  * Strips edition noise so the ORIGINAL track can be found on LRCLIB/Genius:
  * "(Slowed + Reverb)", "[TikTok Edit]", "sped up", "remix", "nightcore",
@@ -520,7 +537,11 @@ export function cleanTrackMetadata(artist: string, title: string): { artist: str
       .replace(/\s+/g, " ")
       .trim();
 
-  return { artist: clean(artist), title: clean(title) };
+  const cleanedArtist = clean(artist);
+  // YT Music video titles embed the artist before the track name; strip the
+  // leading "{artist} - " prefix so the LRCLIB search key is the bare track
+  // title and the exact /get lookup can fire.
+  return { artist: cleanedArtist, title: stripArtistTitlePrefix(cleanedArtist, clean(title)) };
 }
 
 const LRC_TIME_TAG = /\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/g;

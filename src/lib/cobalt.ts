@@ -89,9 +89,17 @@ interface CobaltResponse {
 function parseTitleArtist(filename: string): { title: string; artist: string } {
   // Strip .mp3 extension
   const base = filename.replace(/\.mp3$/i, "");
-  const dashIdx = base.indexOf(" - ");
+  const dashIdx = base.lastIndexOf(" - ");
   if (dashIdx !== -1) {
-    return { title: base.slice(0, dashIdx).trim(), artist: base.slice(dashIdx + 3).trim() };
+    let title = base.slice(0, dashIdx).trim();
+    const artist = base.slice(dashIdx + 3).trim();
+    // YT Music video titles embed the artist ("Ari Abdul - BABYDOLL (Lyric
+    // Video)") while cobalt appends the trailing artist, so strip the leading
+    // "{artist} - " prefix from the title when present (case-insensitive).
+    if (artist && title.toLowerCase().startsWith(`${artist.toLowerCase()} - `)) {
+      title = title.slice(artist.length + 3).trim();
+    }
+    return { title, artist };
   }
   return { title: base || "Unknown", artist: "Unknown artist" };
 }
