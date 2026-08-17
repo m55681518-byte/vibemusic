@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { lookupLyrics, cleanTrackMetadata } from "@/lib/lyrics";
+import { lookupLyrics } from "@/lib/lyrics";
 import { whisperTranscribe } from "@/lib/whisper";
 import { loadMeta, mp3PathFor, fileExists } from "@/lib/store";
 import { probeAudioDuration } from "@/lib/ytdlp";
@@ -27,13 +27,13 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Search with CLEANED names so the ORIGINAL track is found; the raw
-  // artist/title stay untouched for the UI. The source video URL (webpageUrl,
-  // else the raw input URL) feeds the on-demand caption fallback.
-  const cleaned = cleanTrackMetadata(artist, title);
+  // Pass the RAW user artist/title so LRCLIB ranking can recognize edition
+  // tags like "(Slowed)"/"(Sped Up)" (lookupLyrics cleans internally for the
+  // search key). The source video URL (webpageUrl, else the raw input URL)
+  // feeds the on-demand caption fallback.
   const result = await lookupLyrics(
-    cleaned.artist,
-    cleaned.title,
+    artist,
+    title,
     id,
     meta?.webpageUrl ?? meta?.url,
     actualDurationSec ?? undefined,

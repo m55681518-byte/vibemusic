@@ -557,6 +557,28 @@ function maxLrcTimestamp(lrc: string): number {
 }
 
 /**
+ * Pure decision helper for time rescaling: returns ratio =
+ * actualDurationSec / anchor where the anchor is the record's CLAIMED
+ * duration when present (LRCLIB's source-derived duration matches the track
+ * end), else the synced LRC's own last-timestamp span. Returns null when
+ * actualDurationSec is not positive, when no positive anchor exists, or when
+ * the ratio falls outside the 0.3..3.0 guard band. The caller decides whether
+ * |ratio - 1| is large enough to actually rescale.
+ */
+export function rescaleRatioFor(
+  actualDurationSec: number,
+  recordDurationSec: number,
+  lrcSpanSec: number,
+): number | null {
+  if (!(actualDurationSec > 0)) return null;
+  const anchor = recordDurationSec > 0 ? recordDurationSec : lrcSpanSec;
+  if (!(anchor > 0)) return null;
+  const ratio = actualDurationSec / anchor;
+  if (!(ratio > 0.3 && ratio < 3.0)) return null;
+  return ratio;
+}
+
+/**
  * Waterfall: LRCLIB (synced) -> Genius public page (plain) -> stored
  * auto-captions for the track id (plain) -> on-demand YouTube auto-captions
  * (synced LRC). `id` and `sourceUrl` are optional so existing artist/title
@@ -586,16 +608,15 @@ export async function lookupLyrics(
     if (lrclib.instrumental) return { synced: null, plain: null, isInstrumental: true };
     if (lrclib.hit) {
       let { synced, plain } = lrclib.hit;
-      // Time-scale normalization: base the ratio on the synced LRC's own last
-      // timestamp when known (LRCLIB's per-record duration is unreliable — the
-      // "BAILA LENTO" dur-95 record is really an 84s-timed LRC), falling back
-      // to the record's claimed duration only when the span is unavailable.
+      // Time-scale normalization: anchor the ratio on the record's CLAIMED
+      // duration (LRCLIB's source-derived duration matches the track end),
+      // falling back to the synced LRC's own last-timestamp span only when no
+      // duration is reported. The last lyric timestamp under-measures a track
+      // with an instrumental/outro tail, so anchoring on it over-stretches.
       if (synced && actualDurationSec) {
         const lastTimestamp = maxLrcTimestamp(synced);
-        const span =
-          lastTimestamp > 0 && Number.isFinite(lastTimestamp) ? lastTimestamp : (lrclib.duration ?? 0);
-        const ratio = span > 0 ? actualDurationSec / span : NaN;
-        if (Number.isFinite(ratio) && ratio > 0.3 && ratio < 3.0 && Math.abs(ratio - 1) > 0.02) {
+        const ratio = rescaleRatioFor(actualDurationSec, lrclib.duration ?? 0, lastTimestamp);
+        if (ratio !== null && Math.abs(ratio - 1) > 0.02) {
           synced = rescaleLrc(synced, ratio);
         }
       }
