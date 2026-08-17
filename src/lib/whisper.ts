@@ -9,8 +9,8 @@ import { buildLrc, captionsToPlain, type SrtLine } from "./lyrics";
  * @gradio/client. The stored MP3 is uploaded to a public Whisper space, the
  * transcription endpoint is discovered through view_api() (never assumed),
  * and the returned timestamped segments (start/end/text) are parsed into the
- * standardized LRC array [{ timeInSeconds: seg.start, text: seg.text }] before
- * being rendered as synced LRC via buildLrc.
+ * standardized LRC array [{ timeInSeconds: seg.start, end: seg.end, text: seg.text }]
+ * before being rendered as synced LRC via buildLrc.
  *
  *   - Space list: AI_WHISPER_SPACES (comma-separated env override), else the
  *     built-in public fallback array below. No API key or token is needed and
@@ -44,6 +44,7 @@ export interface WhisperTranscribeResult {
 
 interface VerboseJsonSegment {
   start?: number;
+  end?: number;
   text?: string;
   no_speech_prob?: number;
 }
@@ -299,11 +300,11 @@ function segmentsToResult(segments: GradioSegment[]): WhisperTranscribeResult | 
     return { synced: null, plain: null, isInstrumental: true };
   }
 
-  // Standardized LRC array [{ timeInSeconds, text }] before building synced LRC.
-  const lrcLines = useful.map((seg) => ({ timeInSeconds: seg.start, text: seg.text }));
+  // Standardized LRC array [{ timeInSeconds, end, text }] before building synced LRC.
+  const lrcLines = useful.map((seg) => ({ timeInSeconds: seg.start, end: seg.end, text: seg.text }));
   const lines: SrtLine[] = lrcLines.map((line) => ({
     start: line.timeInSeconds,
-    end: line.timeInSeconds,
+    end: Number.isFinite(line.end) ? line.end : line.timeInSeconds,
     text: line.text,
   }));
 
@@ -347,6 +348,7 @@ async function groqTranscribe(buffer: Buffer, apiKey: string): Promise<WhisperTr
 
     const mappedSegments = segments.map((seg) => ({
       start: typeof seg.start === "number" ? seg.start : 0,
+      end: typeof seg.end === "number" ? seg.end : typeof seg.start === "number" ? seg.start : 0,
       text: (seg.text ?? "").trim(),
       noSpeechProb: seg.no_speech_prob,
     }));
@@ -361,7 +363,11 @@ async function groqTranscribe(buffer: Buffer, apiKey: string): Promise<WhisperTr
       return { synced: null, plain: null, isInstrumental: true };
     }
 
-    const lines: SrtLine[] = useful.map((seg) => ({ start: seg.start, end: seg.start, text: seg.text }));
+    const lines: SrtLine[] = useful.map((seg) => ({
+      start: seg.start,
+      end: seg.end ?? seg.start,
+      text: seg.text,
+    }));
     return {
       synced: buildLrc(lines),
       plain: captionsToPlain(lines),
