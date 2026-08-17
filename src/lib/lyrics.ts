@@ -64,18 +64,33 @@ export function captionsToPlain(captions: SrtLine[]): string {
 
 /**
  * Builds an LRC string ("[mm:ss.mmm] text" per line) from timed caption lines
- * so the karaoke UI can render them in sync with playback.
+ * so the karaoke UI can render them in sync with playback. Long instrumental
+ * gaps (> 5s) between captions emit a "♪" marker line at the previous caption
+ * end + 0.5s so the karaoke UI clears the prior lyric during the break.
  */
 export function buildLrc(captions: SrtLine[]): string {
-  return captions
-    .map((caption) => {
+  const lines = [];
+  for (let i = 0; i < captions.length; i++) {
+    const caption = captions[i];
+    const text = caption.text.trim();
+    if (text) {
       const totalMs = Math.round(caption.start * 1000);
       const m = Math.floor(totalMs / 60000);
       const s = Math.floor((totalMs % 60000) / 1000);
       const ms = totalMs % 1000;
-      return `[${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(ms).padStart(3, "0")}] ${caption.text}`;
-    })
-    .join("\n");
+      lines.push(`[${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(ms).padStart(3, "0")}] ${text}`);
+    }
+    const next = captions[i + 1];
+    if (next && next.start - caption.end > 5) {
+      // Instrumental break: mark the gap with a ♪ line at caption end + 0.5s.
+      const markerMs = Math.round((caption.end + 0.5) * 1000);
+      const mm = Math.floor(markerMs / 60000);
+      const ss = Math.floor((markerMs % 60000) / 1000);
+      const mss = markerMs % 1000;
+      lines.push(`[${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}.${String(mss).padStart(3, "0")}] ♪`);
+    }
+  }
+  return lines.join("\n");
 }
 
 async function getJson(pathname: string): Promise<Record<string, unknown>[] | Record<string, unknown> | null> {
