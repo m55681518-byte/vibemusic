@@ -105,7 +105,19 @@ async function writeTikTokTrack(url: string, id: string, mp3Path: string): Promi
     throw new Error(`TikWM could not resolve this TikTok link: ${body?.msg ?? "unknown error"}`);
   }
 
-  const audioUrl = (data.music && data.music.trim()) || data.play;
+  // Prioritise the official background track URL over raw video audio.
+  // data.music is the background track (may contain voiceovers if no dedicated
+  // music track is available), data.music_info.play is an alternate music URL,
+  // and data.play is the raw video audio (contains voiceovers). We only fall
+  // back to data.play when neither data.music nor data.music_info.play is available.
+  let audioUrl: string | undefined;
+  if (data.music && data.music.trim()) {
+    audioUrl = data.music;
+  } else if (data.music_info && data.music_info.play && data.music_info.play.trim()) {
+    audioUrl = data.music_info.play;
+  } else if (data.play && data.play.trim()) {
+    audioUrl = data.play;
+  }
   if (!audioUrl) {
     throw new Error("TikWM returned no audio URL for this TikTok link.");
   }
@@ -266,17 +278,23 @@ export interface ExtractResult {
 const URL_IN_TEXT = /https?:\/\/[^\s"'<>]+/gi;
 
 /**
- * Extracts the first valid http(s) URL from arbitrary text. Android share
+ * Extracts the first valid http(s) URL from arbitrary text, filtering out
+ * promotional links such as /tiktoklite and /app endings. Android share
  * sheets append captions and punctuation to the link ("Check this out
  * https://vt.tiktok.com/xyz", "…thanks!"), so the raw string is scanned for
- * the first parseable http(s) URL and everything else is ignored. Returns
- * null when no URL is present so callers can treat it as missing.
+ * the first parseable http(s) URL that is not a promotional link and everything
+ * else is ignored. Returns null when no valid URL is present so callers can
+ * treat it as missing.
  */
 export function extractValidUrl(input: string): string | null {
   for (const match of input.matchAll(URL_IN_TEXT)) {
     const candidate = match[0].replace(/[.,;:!?'")\]}]+$/, "");
     try {
       new URL(candidate);
+      // Promotional links (TikTok Lite /app endings) are not valid video URLs
+      if (/\/tiktoklite$/i.test(candidate) || /\/app$/i.test(candidate)) {
+        continue; // skip this URL and scan the next one
+      }
       return candidate;
     } catch {
       // Bare scheme (e.g. "https://") or malformed URL — keep scanning.
