@@ -81,16 +81,18 @@ if (!fnMatch) {
       else fail(`G3: marker inserted on a small gap (${JSON.stringify(out)})`);
     }
 
-    // G4 — marker text is EXACTLY the ♪ symbol (no surrounding junk).
+    // G4 — marker line is EXACTLY one '[mm:ss.mmm] ♪' (anchored: no duplicate
+    // brackets, no extra digits — a malformed double-timestamp like
+    // '[00:002.500][00:02.500] ♪' must be rejected).
     {
       const out = buildLrc([
         { start: 1, end: 2, text: "line one" },
         { start: 10, end: 11, text: "line two" },
       ]);
       const markerLine = out.split("\n").find((l) => l.includes("♪"));
-      const clean = markerLine && /\[[0-9:.]+\] ♪$/.test(markerLine);
-      if (clean) pass("G4: ♪ marker line is exactly '[mm:ss.mmm] ♪'");
-      else fail(`G4: marker line malformed (${JSON.stringify(markerLine)})`);
+      const clean = markerLine && /^\[\d{2}:\d{2}\.\d{3}\] ♪$/.test(markerLine);
+      if (clean) pass("G4: ♪ marker line is exactly one '[mm:ss.mmm] ♪'");
+      else fail(`G4: marker line malformed (expected single '[mm:ss.mmm] ♪', got ${JSON.stringify(markerLine)})`);
     }
 
     // G5 — no empty text lines in output ("[mm:ss.mmm] " alone).
@@ -120,8 +122,8 @@ if (!fnMatch) {
         { start: 30, end: 31, text: "c" },
       ]);
       const markers = out.split("\n").filter((l) => l.includes("♪"));
-      if (markers.length === 2 && markers[0].includes("002.500") && markers[1].includes("011.500")) {
-        pass("G7: two gaps → two ♪ markers at 002.500 and 011.500");
+      if (markers.length === 2 && markers[0].includes("02.500") && markers[1].includes("11.500")) {
+        pass("G7: two gaps → two ♪ markers at 00:02.500 and 00:11.500");
       } else {
         fail(`G7: multi-gap markers wrong (${markers.length} markers: ${JSON.stringify(markers)})`);
       }
