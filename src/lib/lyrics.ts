@@ -127,19 +127,37 @@ interface LrclibHit {
 }
 
 /**
- * Ranks a title-only LRCLIB hit: exact trackName match first (the ORIGINAL
- * track beats covers/edits), then synced lyrics, then a duration closest to
- * the real audio duration. Higher is better.
+ * Ranks a title-only LRCLIB hit: a trackName matching the ORIGINAL title
+ * (e.g. "BAILA LENTO (Slowed)") beats a clean-exact match when the user
+ * literally asked for a slowed/sped-up edition, then synced lyrics, then a
+ * duration closest to the real audio duration. Higher is better.
  */
 function rankTitleOnlyHit(
   r: Record<string, unknown>,
   titleLower: string,
   actualDurationSec?: number,
+  originalTitleLower?: string,
 ): number {
-  let score =
-    typeof r.trackName === "string" && r.trackName.toLowerCase() === titleLower
-      ? 1_000_000
-      : 0;
+  const name = typeof r.trackName === "string" ? r.trackName.toLowerCase() : "";
+  // originalTitleLower is the user's UNcleaned title. When cleaning changed
+  // it (original differs from the cleaned titleLower), the user asked for a
+  // specific edition ("(Slowed)", "(Sped Up)", "Remix", "Nightcore", ...):
+  // a hit whose trackName matches the ORIGINAL title is the true record and
+  // outranks the clean-exact hit (which is usually the un-edited original's
+  // LRC, timed for the un-shifted audio).
+  const originalDiffers =
+    typeof originalTitleLower === "string" &&
+    originalTitleLower.length > 0 &&
+    originalTitleLower !== titleLower;
+  let score = 0;
+  if (name) {
+    if (originalDiffers) {
+      if (name === originalTitleLower) score += 1_000_000;
+      else if (name === titleLower) score += 500_000;
+    } else if (name === titleLower) {
+      score += 1_000_000;
+    }
+  }
   if (typeof r.syncedLyrics === "string" && r.syncedLyrics) score += 100_000;
   if (typeof r.duration === "number" && actualDurationSec && actualDurationSec > 0) {
     score -= Math.abs(r.duration - actualDurationSec);
@@ -152,6 +170,7 @@ async function lookupLrclib(
   artist: string,
   title: string,
   actualDurationSec?: number,
+  originalTitle?: string,
 ): Promise<LrclibHit> {
   const a = encodeURIComponent(artist);
   const t = encodeURIComponent(title);
@@ -200,6 +219,12 @@ async function lookupLrclib(
   const titleList = Array.isArray(titleOnly) ? titleOnly : [];
   if (titleList.length) {
     const titleLower = title.toLowerCase();
+    // The user's original (uncleaned) title — used to prefer a hit matching
+    // e.g. "(Slowed)" over the clean-exact record of the un-edited original.
+    const originalTitleLower =
+      typeof originalTitle === "string" && originalTitle.trim()
+        ? originalTitle.toLowerCase()
+        : undefined;
     const usable = titleList
       .map(asRecord)
       .filter(
@@ -211,8 +236,8 @@ async function lookupLrclib(
       )
       .sort(
         (a, b) =>
-          rankTitleOnlyHit(b, titleLower, actualDurationSec) -
-          rankTitleOnlyHit(a, titleLower, actualDurationSec),
+          rankTitleOnlyHit(b, titleLower, actualDurationSec, originalTitleLower) -
+          rankTitleOnlyHit(a, titleLower, actualDurationSec, originalTitleLower),
       );
     const best = usable[0];
     if (best) {
@@ -517,6 +542,21 @@ export function rescaleLrc(lrc: string, ratio: number): string {
 }
 
 /**
+ * Largest [mm:ss(.ms)] timestamp in an LRC string (seconds), 0 when the LRC
+ * has no time tags. Used to derive the rescale ratio from the synced LRC's
+ * own time span instead of LRCLIB's (unreliable) per-record duration.
+ */
+function maxLrcTimestamp(lrc: string): number {
+  let max = 0;
+  for (const m of lrc.matchAll(LRC_TIME_TAG)) {
+    const fraction = (m[3] ?? "0").padEnd(3, "0").slice(0, 3);
+    const seconds = Number(m[1]) * 60 + Number(m[2]) + Number(fraction) / 1000;
+    if (seconds > max) max = seconds;
+  }
+  return max;
+}
+
+/**
  * Waterfall: LRCLIB (synced) -> Genius public page (plain) -> stored
  * auto-captions for the track id (plain) -> on-demand YouTube auto-captions
  * (synced LRC). `id` and `sourceUrl` are optional so existing artist/title
@@ -541,15 +581,20 @@ export async function lookupLyrics(
   if (!hasQuery && !id && !sourceUrl) return { synced: null, plain: null };
 
   if (hasQuery) {
-    const lrclib = await lookupLrclib(a, t, actualDurationSec);
+    const lrclib = await lookupLrclib(a, t, actualDurationSec, title);
     // LRCLIB reports the track as instrumental: no lyrics to find.
     if (lrclib.instrumental) return { synced: null, plain: null, isInstrumental: true };
     if (lrclib.hit) {
       let { synced, plain } = lrclib.hit;
-      // Time-scale normalization: when both durations are known and differ
-      // by more than 2%, rescale every timestamp by ratio = actual / original.
-      if (synced && actualDurationSec && lrclib.duration) {
-        const ratio = actualDurationSec / lrclib.duration;
+      // Time-scale normalization: base the ratio on the synced LRC's own last
+      // timestamp when known (LRCLIB's per-record duration is unreliable — the
+      // "BAILA LENTO" dur-95 record is really an 84s-timed LRC), falling back
+      // to the record's claimed duration only when the span is unavailable.
+      if (synced && actualDurationSec) {
+        const lastTimestamp = maxLrcTimestamp(synced);
+        const span =
+          lastTimestamp > 0 && Number.isFinite(lastTimestamp) ? lastTimestamp : (lrclib.duration ?? 0);
+        const ratio = span > 0 ? actualDurationSec / span : NaN;
         if (Number.isFinite(ratio) && ratio > 0.3 && ratio < 3.0 && Math.abs(ratio - 1) > 0.02) {
           synced = rescaleLrc(synced, ratio);
         }
