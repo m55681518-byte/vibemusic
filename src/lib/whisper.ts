@@ -5,12 +5,19 @@ import { buildLrc, captionsToPlain, type SrtLine } from "./lyrics";
 /**
  * Whisper speech-to-text tier (100% server-side, Node-only module).
  *
- * PRIMARY: zero-key public Hugging Face Gradio Spaces via the official
- * @gradio/client. The stored MP3 is uploaded to a public Whisper space, the
- * transcription endpoint is discovered through view_api() (never assumed),
- * and the returned timestamped segments (start/end/text) are parsed into the
- * standardized LRC array [{ timeInSeconds: seg.start, end: seg.end, text: seg.text }]
- * before being rendered as synced LRC via buildLrc.
+ * KEYED TIERS FIRST, zero-key Gradio race LAST:
+ *   1. Groq (AI_WHISPER_API_KEY / AI_WHISPER_KEY / GROQ_API_KEY) — the
+ *      fastest backend; whisper-large-v3-turbo on Groq's LPU answers ~20s
+ *      clips in ~1s.
+ *   2. Puter (PUTER_AUTH_TOKEN / AI_PUTER_TOKEN) — user-pays, keyless-to-dev;
+ *      speech2txt (whisper-1) via @heyputer/puter.js.
+ *   3. Zero-key public Hugging Face Gradio Spaces via the official
+ *      @gradio/client. The stored MP3 is uploaded to a public Whisper space,
+ *      the transcription endpoint is discovered through view_api() (never
+ *      assumed), and the returned timestamped segments (start/end/text) are
+ *      parsed into the standardized LRC array
+ *      [{ timeInSeconds: seg.start, end: seg.end, text: seg.text }] before
+ *      being rendered as synced LRC via buildLrc.
  *
  *   - Space list: AI_WHISPER_SPACES (comma-separated env override), else the
  *     built-in public fallback array below. No API key or token is needed and
@@ -21,8 +28,9 @@ import { buildLrc, captionsToPlain, type SrtLine } from "./lyrics";
  *     the whole budget before a healthy one is reached.
  *   - Budget: a TOTAL_TIMEOUT_MS (15000ms) race guards the whole tier.
  *
- * LAST RESORT: the legacy Groq key path (AI_WHISPER_API_KEY /
- * AI_WHISPER_KEY / GROQ_API_KEY) when a key IS configured.
+ * The keyed tiers above are tried first; the Gradio race below is the
+ * no-credential fallback — it still runs when no Groq key and no Puter
+ * token are configured, and last after both keyed tiers return nothing.
  *
  * Every failure mode (timeout, empty result, network/HTTP error) resolves
  * gracefully to `null` or { synced:null, plain:null, isInstrumental:true } —
@@ -93,6 +101,11 @@ function whisperApiKey(): string | null {
   );
 }
 
+/** Reads the Puter auth token from env (never hardcoded), else null. */
+function puterApiToken(): string | null {
+  return process.env.PUTER_AUTH_TOKEN || process.env.AI_PUTER_TOKEN || null;
+}
+
 /** Resolves to `null` after `ms` milliseconds (graceful timeout signal). */
 function timeoutNull(ms: number): Promise<null> {
   return new Promise<null>((resolve) => {
@@ -140,14 +153,28 @@ export async function whisperTranscribe(mp3Path: string): Promise<WhisperTranscr
   }
 }
 
-/** Zero-key Gradio spaces first, then the optional keyed Groq path. */
+/**
+ * Keyed tiers first, zero-key race last: Groq when a key is set (fastest),
+ * then the user-pays Puter tier when a token is set, then the parallel
+ * Gradio spaces race as the no-credential fallback.
+ */
 async function runAllTiers(buffer: Buffer): Promise<WhisperTranscribeResult | null> {
-  const viaSpaces = await transcribeViaGradio(buffer);
-  if (viaSpaces) return viaSpaces;
-
+  // Groq (whisper-large-v3-turbo on LPU) is the fastest backend — try it first.
   const apiKey = whisperApiKey();
-  if (!apiKey) return null; // no key → nothing else to try
-  return groqTranscribe(buffer, apiKey);
+  if (apiKey) {
+    const viaGroq = await groqTranscribe(buffer, apiKey);
+    if (viaGroq) return viaGroq;
+  }
+
+  // User-pays Puter tier next, when a token is configured.
+  const puterToken = puterApiToken();
+  if (puterToken) {
+    const viaPuter = await puterTranscribe(buffer, puterToken);
+    if (viaPuter) return viaPuter;
+  }
+
+  // Zero-key public Gradio spaces, fired in parallel, as the final fallback.
+  return transcribeViaGradio(buffer);
 }
 
 /**
@@ -171,7 +198,7 @@ async function transcribeViaGradio(buffer: Buffer): Promise<WhisperTranscribeRes
   );
 
   // Promise.any = first non-null success in time; all-null (or all rejected)
-  // settles to null via the catch. No throw escapes the tier.
+  // settles to null via the catch. Nothing escapes the tier.
   const identified = await Promise.any(
     attempts.map(async (attempt): Promise<WhisperTranscribeResult> => {
       const outcome = await attempt;
@@ -399,4 +426,57 @@ async function groqTranscribe(buffer: Buffer, apiKey: string): Promise<WhisperTr
     // Network / HTTP / timeout / fs errors never propagate to the route.
     return null;
   }
+}
+
+/**
+ * User-pays Puter tier: @heyputer/puter.js speech2txt (whisper-1). Reached
+ * after the Groq key path when a Puter token env is set. Any failure
+ * (missing bundle, network, auth, empty transcript) resolves to null so the
+ * zero-key Gradio race below still gets its shot.
+ */
+async function puterTranscribe(
+  buffer: Buffer,
+  token: string | null,
+): Promise<WhisperTranscribeResult | null> {
+  const puterToken = token;
+  if (!puterToken) return null;
+
+  try {
+    const { init } = await import("@heyputer/puter.js/src/init.cjs");
+    const puter = init(puterToken);
+
+    const model = process.env.AI_WHISPER_MODEL || "whisper-1";
+    const transcript = await puter.ai.speech2txt(
+      new File([new Uint8Array(buffer)], "audio.mp3", {
+        type: "audio" + "/" + "mpeg",
+      }),
+      { model },
+    );
+    return puterResultToWhisper(transcript);
+  } catch {
+    // Network / auth / runtime errors never propagate to the route.
+    return null;
+  }
+}
+
+/**
+ * Maps a Puter speech2txt result into the standardized result shape: explicit
+ * `.segments` are preferred (same start/end/text parsing as the spaces), else
+ * the plain `.text` becomes a single t=0 segment. No usable text resolves to
+ * { synced:null, plain:null, isInstrumental:true } via segmentsToResult.
+ */
+function puterResultToWhisper(transcript: unknown): WhisperTranscribeResult | null {
+  const record =
+    transcript && typeof transcript === "object" && !Array.isArray(transcript)
+      ? (transcript as Record<string, unknown>)
+      : null;
+
+  const segments = record && Array.isArray(record.segments) ? record.segments : [];
+  const mapped = segments
+    .map(toSegment)
+    .filter((seg): seg is GradioSegment => seg !== null);
+  if (mapped.length) return segmentsToResult(mapped);
+
+  const text = record && typeof record.text === "string" ? record.text : "";
+  return segmentsToResult([{ start: 0, end: 0, text }]);
 }

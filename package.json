@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@gradio/client": "^2.5.0",
+    "@heyputer/puter.js": "^2.6.1",
     "jsmediatags": "^3.9.5",
     "next": "^14.2.15",
     "react": "^18.3.1",
