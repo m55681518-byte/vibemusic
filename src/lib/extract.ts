@@ -38,6 +38,7 @@ import {
   type TrackMeta,
 } from "./store";
 import { cleanTrackMetadata } from "./lyrics";
+import { identifyTrackFromAudio } from "./identify";
 
 const COBALT_MAX_ATTEMPTS = 3;
 const COBALT_RETRY_BACKOFF_MS = 2000;
@@ -160,7 +161,8 @@ async function writeTikTokTrack(url: string, id: string, mp3Path: string): Promi
   // "Artist - Song" pair can surface; adopt the cleaned values only when they
   // yield a distinct, non-generic title.
   const GENERIC_MUSIC_TITLE = /^(?:original sound|som original)\s*-|sound created by/i;
-  if (GENERIC_MUSIC_TITLE.test(title) && data.title) {
+  const genericOriginalTitle = GENERIC_MUSIC_TITLE.test(title);
+  if (genericOriginalTitle && data.title) {
     const stripped = title.replace(/^(?:original sound|som original)\s*-\s*[^\s]+/, "").trim();
     const cleaned = cleanTrackMetadata(artist, `${stripped} ${data.title}`.trim());
     if (
@@ -170,6 +172,29 @@ async function writeTikTokTrack(url: string, id: string, mp3Path: string): Promi
     ) {
       title = cleaned.title;
       if (cleaned.artist && cleaned.artist !== "Unknown artist") artist = cleaned.artist;
+    }
+  }
+
+  // "Original sound" audio identification: when the audio is still a generic
+  // TikTok placeholder (the caption fallback above only surfaced a caption
+  // without a real "Artist - Song" pair — no " - " separator in the cleaned
+  // title, or the artist is still the video creator/Unknown), name the REAL
+  // track from the audio itself: zero-key Whisper transcription → Genius
+  // lyric-text search. A confident hit (matchedWords >= 5) overrides
+  // title/artist so Tier 1/2 lyrics search uses the actual song name; a
+  // null/weak hit keeps the fallback. Extraction is never blocked —
+  // identifyTrackFromAudio never throws.
+  const artistIsStillGeneric =
+    /Unknown/i.test(artist) ||
+    Boolean(
+      data.author &&
+        (artist === data.author.nickname?.trim() || artist === data.author.unique_id?.trim()),
+    );
+  if (genericOriginalTitle && (!title.includes(" - ") || artistIsStillGeneric) && mp3Path) {
+    const identified = await identifyTrackFromAudio(mp3Path);
+    if (identified && identified.matchedWords >= 5) {
+      title = identified.title;
+      artist = identified.artist;
     }
   }
 

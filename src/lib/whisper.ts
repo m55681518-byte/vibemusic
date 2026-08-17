@@ -15,8 +15,10 @@ import { buildLrc, captionsToPlain, type SrtLine } from "./lyrics";
  *   - Space list: AI_WHISPER_SPACES (comma-separated env override), else the
  *     built-in public fallback array below. No API key or token is needed and
  *     none is ever hardcoded.
- *   - Failover: each space gets PER_SPACE_TIMEOUT_MS (5000ms) to answer; when
- *     it is busy/queuing, the next space is tried.
+ *   - Parallel race: ALL spaces are fired at once, each under its own
+ *     PER_SPACE_TIMEOUT_MS (14000ms) race; the FIRST space to return a real
+ *     transcript wins immediately, so a broken/queued space no longer burns
+ *     the whole budget before a healthy one is reached.
  *   - Budget: a TOTAL_TIMEOUT_MS (15000ms) race guards the whole tier.
  *
  * LAST RESORT: the legacy Groq key path (AI_WHISPER_API_KEY /
@@ -148,16 +150,36 @@ async function runAllTiers(buffer: Buffer): Promise<WhisperTranscribeResult | nu
   return groqTranscribe(buffer, apiKey);
 }
 
-/** Tries each public space in order, failing over within 5s per space. */
+/**
+ * Fires every public space IN PARALLEL; the first space that answers wins.
+ *
+ * Sequential failover wasted the 15s total budget on dead/queued spaces: the
+ * broken hf-audio/whisper-large-v3-turbo (503) and the ZeroGPU-queued
+ * openai/whisper were consumed before hf-audio/whisper-large-v3 (which
+ * answers in ~9s) was ever reached — whisperTranscribe returned null in
+ * practice. Each space still runs under its own PER_SPACE_TIMEOUT_MS race;
+ * Promise.any resolves with the FIRST space to return a real transcript (a
+ * null outcome counts as a rejection so it never wins), and the outer
+ * TOTAL_TIMEOUT_MS race still caps the whole tier.
+ */
 async function transcribeViaGradio(buffer: Buffer): Promise<WhisperTranscribeResult | null> {
-  for (const slug of whisperSpaces()) {
-    const outcome = await Promise.race([
+  const attempts = whisperSpaces().map((slug) =>
+    Promise.race([
       transcribeWithSpace(slug, buffer),
       timeoutNull(PER_SPACE_TIMEOUT_MS),
-    ]);
-    if (outcome) return outcome; // real transcript or confirmed instrumental
-  }
-  return null; // every space was busy/unreachable within its budget
+    ]),
+  );
+
+  // Promise.any = first non-null success in time; all-null (or all rejected)
+  // settles to null via the catch. No throw escapes the tier.
+  const identified = await Promise.any(
+    attempts.map(async (attempt): Promise<WhisperTranscribeResult> => {
+      const outcome = await attempt;
+      if (outcome) return outcome;
+      return Promise.reject<WhisperTranscribeResult>(null);
+    }),
+  ).catch(() => null);
+  return identified;
 }
 
 /**
