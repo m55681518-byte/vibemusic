@@ -37,6 +37,7 @@ import {
   pruneStorage,
   type TrackMeta,
 } from "./store";
+import { cleanTrackMetadata } from "./lyrics";
 
 const COBALT_MAX_ATTEMPTS = 3;
 const COBALT_RETRY_BACKOFF_MS = 2000;
@@ -69,8 +70,8 @@ interface TikwmData {
   cover?: string;
   music?: string;
   play?: string;
-  author?: { nickname?: string };
-  music_info?: { author?: string };
+  author?: { nickname?: string; unique_id?: string };
+  music_info?: { title?: string; author?: string; play?: string; cover?: string };
 }
 
 interface TikwmResponse {
@@ -84,8 +85,10 @@ interface TikwmResponse {
  * TikWM API — which resolves vt.tiktok.com/vm.tiktok.com shortlinks server-side,
  * bypassing the datacenter-IP Captcha that broke local yt-dlp — then downloads
  * the returned remote audio, ffprobe-verifies it, and persists it exactly like
- * a cobalt track. data.music is the audio URL (fall back to data.play when
- * empty); data.title + data.cover feed the metadata.
+ * a cobalt track. The background track's real metadata lives in
+ * data.music_info { title, author, play, cover } and wins over the video
+ * caption (data.title) / creator profile (data.author); data.music is the
+ * background-track audio URL with data.play as last resort.
  */
 async function writeTikTokTrack(url: string, id: string, mp3Path: string): Promise<TrackMeta> {
   const res = await fetch(`${TIKWM_API}?url=${encodeURIComponent(url)}`, {
@@ -105,16 +108,14 @@ async function writeTikTokTrack(url: string, id: string, mp3Path: string): Promi
     throw new Error(`TikWM could not resolve this TikTok link: ${body?.msg ?? "unknown error"}`);
   }
 
-  // Prioritise the official background track URL over raw video audio.
-  // data.music is the background track (may contain voiceovers if no dedicated
-  // music track is available), data.music_info.play is an alternate music URL,
-  // and data.play is the raw video audio (contains voiceovers). We only fall
-  // back to data.play when neither data.music nor data.music_info.play is available.
+  // audioUrl priority: the dedicated music track's audio (data.music_info.play),
+  // then the background-track URL (data.music), then raw video audio
+  // (data.play, contains voiceovers — last resort).
   let audioUrl: string | undefined;
-  if (data.music && data.music.trim()) {
-    audioUrl = data.music;
-  } else if (data.music_info && data.music_info.play && data.music_info.play.trim()) {
+  if (data.music_info && data.music_info.play && data.music_info.play.trim()) {
     audioUrl = data.music_info.play;
+  } else if (data.music && data.music.trim()) {
+    audioUrl = data.music;
   } else if (data.play && data.play.trim()) {
     audioUrl = data.play;
   }
@@ -139,14 +140,47 @@ async function writeTikTokTrack(url: string, id: string, mp3Path: string): Promi
     throw new Error("TikWM audio is not playable (ffprobe verification failed).");
   }
 
+  // Metadata priority: the background track's real metadata (data.music_info)
+  // wins over the video caption (data.title, full of hashtags) and the video
+  // creator's profile (data.author). Feeding the caption as the track title
+  // breaks Tier 1/2 lyrics search, which would query LRCLIB/Genius with
+  // hashtag text instead of the actual track name.
+  let title = data.music_info?.title?.trim() || data.title?.trim() || "Untitled";
+  let artist =
+    data.music_info?.author?.trim() ||
+    data.author?.nickname?.trim() ||
+    data.author?.unique_id?.trim() ||
+    "Unknown artist";
+
+  // "Original sound" clean fallback: TikTok names creator-made audio with a
+  // generic placeholder ("original sound - <user>", "som original - <user>",
+  // "…sound created by…") that carries no real song info. Drop the placeholder,
+  // combine the remainder with the video caption, and let cleanTrackMetadata
+  // strip hashtags/@handles (and any "{artist} - " prefix) so a real
+  // "Artist - Song" pair can surface; adopt the cleaned values only when they
+  // yield a distinct, non-generic title.
+  const GENERIC_MUSIC_TITLE = /^(?:original sound|som original)\s*-|sound created by/i;
+  if (GENERIC_MUSIC_TITLE.test(title) && data.title) {
+    const stripped = title.replace(/^(?:original sound|som original)\s*-\s*[^\s]+/, "").trim();
+    const cleaned = cleanTrackMetadata(artist, `${stripped} ${data.title}`.trim());
+    if (
+      cleaned.title &&
+      cleaned.title !== title.trim() &&
+      !GENERIC_MUSIC_TITLE.test(cleaned.title)
+    ) {
+      title = cleaned.title;
+      if (cleaned.artist && cleaned.artist !== "Unknown artist") artist = cleaned.artist;
+    }
+  }
+
   const track: TrackMeta = {
     id,
     url,
-    title: data.title?.trim() || "Untitled",
-    artist: data.author?.nickname?.trim() || data.music_info?.author?.trim() || "Unknown artist",
+    title,
+    artist,
     album: undefined,
     duration: probedDuration,
-    thumbnail: data.cover || undefined,
+    thumbnail: data.music_info?.cover?.trim() || data.cover || undefined,
     webpageUrl: url,
     extractor: "tikwm",
     mp3Path,
