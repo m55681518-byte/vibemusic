@@ -88,6 +88,10 @@ const tikwmWorldcup = fx("tikwm-worldcup-real.json");
       else fail("GA1e: detector FALSE-POSITIVES on real title 'ME ESPERE - Slowed'");
       if (!re.test("Top world cup goals moments")) pass("GA1f: detector does NOT match a normal caption");
       else fail("GA1f: detector FALSE-POSITIVES on a normal caption");
+      if (!re.test("Unknown Soldier - The Doors")) pass("GA1g: detector does NOT match real title 'Unknown Soldier - The Doors'");
+      else fail("GA1g: detector FALSE-POSITIVES on real title 'Unknown Soldier - The Doors'");
+      if (!re.test("Unknown Pleasures - Joy Division")) pass("GA1h: detector does NOT match real title 'Unknown Pleasures - Joy Division'");
+      else fail("GA1h: detector FALSE-POSITIVES on real title 'Unknown Pleasures - Joy Division'");
     } catch (e) {
       fail(`GA1: detector regex eval failed: ${e.message}`);
     }
@@ -116,6 +120,9 @@ const tikwmWorldcup = fx("tikwm-worldcup-real.json");
       const r2 = sandbox.resolveDisplayIdentity(tikwmWorldcup?.data?.music_info?.title || "ME ESPERE - Slowed");
       if (r2 === "ME ESPERE - Slowed") pass("GA2b: real title passes through unchanged");
       else fail(`GA2b: real title changed: ${JSON.stringify(r2)}`);
+      const r3 = sandbox.resolveDisplayIdentity("Unknown Soldier - The Doors");
+      if (r3 === "Unknown Soldier - The Doors") pass("GA2c: real 'Unknown ...' title passes through unchanged");
+      else fail(`GA2c: real 'Unknown ...' title clobbered: ${JSON.stringify(r3)}`);
     } catch (e) {
       fail(`GA2: resolveDisplayIdentity eval failed: ${e.message}`);
     }
