@@ -51,7 +51,7 @@ else fail(`B2: no second text-lyrics provider (fallbackProvider=${fallbackProvid
 // B3. NEW — yt-dlp extraction pulls platform auto-captions (--write-auto-subs,
 //     --convert-subs srt) so a caption file lands next to the MP3.
 const writeAutoSubs = /--write-auto-subs|--write-subs/.test(libSrc);
-const convertSrt = /--convert-subs\s+srt|--convert-subtitles\s+srt/.test(libSrc);
+const convertSrt = /--convert-subs[\s\S]{0,12}["']srt["']|--convert-subtitles[\s\S]{0,12}["']srt["']/.test(libSrc);
 if (writeAutoSubs && convertSrt) pass("B3: yt-dlp args pull auto-captions as SRT (--write-auto-subs --convert-subs srt)");
 else fail(`B3: yt-dlp auto-caption args missing (writeAutoSubs=${writeAutoSubs}, convertSrt=${convertSrt})`);
 

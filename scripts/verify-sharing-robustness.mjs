@@ -87,13 +87,16 @@ const src = (name) => {
 }
 
 // G3b — collapsible details element on the frontend error UI.
+// Native <details open> + <summary> (journal 031) IS browser-collapsible —
+// no JS toggle required. Gate checks the real native mechanism.
 {
   const page = readFileSync(resolve(root, "src/app/extract/page.tsx"), "utf8");
   const readsDetails = /\.details/.test(page) || /details\b/.test(page);
-  const collapsible = /<details[^>]*>/.test(page) || /details\s+open/.test(page);
-  const toggles = /onClick|useState\(false\)|setShow|toggle/.test(page);
-  if (readsDetails && collapsible && toggles) pass("G3b: error UI shows collapsible error.details");
-  else fail(`G3b: no collapsible details in error UI (reads=${readsDetails}, collapsible=${collapsible}, toggle=${toggles})`);
+  const collapsible = /<details[^>]*>/.test(page) && /<summary>/.test(page);
+  const pre = /<pre>/.test(page) && /\{phase\.details\}/.test(page);
+  if (readsDetails && collapsible && pre)
+    pass("G3b: error UI shows collapsible error.details (native <details open> + summary + pre)");
+  else fail(`G3b: no collapsible details in error UI (reads=${readsDetails}, collapsible=${collapsible}, pre=${pre})`);
 }
 
 // G4 — multi-instance cobalt redundancy (>=3 endpoints, looped).

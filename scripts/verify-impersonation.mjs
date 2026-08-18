@@ -18,43 +18,58 @@ const pass = (msg) => {
   console.log(`PASS ${msg}`);
 };
 
-const impersonationValue = "chrome-131";
+// Generic `chrome` shorthand (journal 016): curl_cffi bundles the latest
+// Chrome version, so a pinned chrome-146 value goes stale the moment yt-dlp
+// rolls targets. The flag must be present at BOTH yt-dlp sites in ytdlp.ts.
+const impersonationValue = "chrome";
 
-// --- 1. src/lib/ytdlp.ts : getVideoInfo() must pass --impersonate ----------
+// --- 1. src/lib/ytdlp.ts : getMediaInfo() must pass --impersonate chrome ----
 const ytdlp = path.join(root, "src", "lib", "ytdlp.ts");
 if (!existsSync(ytdlp)) {
   fail("src/lib/ytdlp.ts missing");
 } else {
   const src = readFileSync(ytdlp, "utf8");
-  const infoCall = src.match(/getVideoInfo\(\s*\[([\s\S]*?)\]\s*\)/);
+  const infoCall = src.match(/getMediaInfo\([\s\S]*?\[\s*([\s\S]*?)\s*\]/);
   if (!infoCall) {
-    fail("getVideoInfo( [...] ) call not found in src/lib/ytdlp.ts");
+    fail("getMediaInfo base args array not found in src/lib/ytdlp.ts");
   } else {
     const args = infoCall[1];
     if (/--impersonate/.test(args) && new RegExp(`["']${impersonationValue}["']`).test(args)) {
-      pass("getVideoInfo passes --impersonate " + impersonationValue);
+      pass("getMediaInfo passes --impersonate " + impersonationValue);
     } else {
-      fail(`getVideoInfo args must include --impersonate ${impersonationValue}`);
+      fail(`getMediaInfo args must include --impersonate ${impersonationValue}`);
     }
   }
 }
 
-// --- 2. src/lib/extract.ts : base spawn args must pass --impersonate --------
+// --- 1b. src/lib/ytdlp.ts : downloadAutoCaptions() must pass chrome ---------
+{
+  const src = readFileSync(ytdlp, "utf8");
+  const capCall = src.match(/downloadAutoCaptions\(([\s\S]*?)\)[\s\S]*?execPromise\(\s*\[([\s\S]*?)\]/);
+  if (!capCall) {
+    fail("execPromise([...]) args array not found in ytdlp.ts downloadAutoCaptions");
+  } else {
+    const args = capCall[2];
+    if (/--impersonate/.test(args) && new RegExp(`["']${impersonationValue}["']`).test(args)) {
+      pass("downloadAutoCaptions passes --impersonate " + impersonationValue);
+    } else {
+      fail(`downloadAutoCaptions args must include --impersonate ${impersonationValue}`);
+    }
+  }
+}
+
+// --- 2. src/lib/extract.ts is 100% external (no yt-dlp base args; flags live
+//        in ytdlp.ts — journal 030 architecture). Guard: no yt-dlp imports.
 const extract = path.join(root, "src", "lib", "extract.ts");
 if (!existsSync(extract)) {
   fail("src/lib/extract.ts missing");
 } else {
   const src = readFileSync(extract, "utf8");
   const base = src.match(/base\s*:\s*string\[\]\s*=\s*\[([\s\S]*?)\];/);
-  if (!base) {
-    fail("base: string[] = [ ... ] args array not found in src/lib/extract.ts");
+  if (base && /--impersonate/.test(base[1])) {
+    fail("extract.ts still carries yt-dlp base args with --impersonate (dead code since journal 030)");
   } else {
-    const args = base[1];
-    if (/--impersonate/.test(args) && new RegExp(`["']${impersonationValue}["']`).test(args)) {
-      pass("extract base args include --impersonate " + impersonationValue);
-    } else {
-      fail(`extract base args must include --impersonate ${impersonationValue}`);
-    }
+    pass("extract.ts is 100% external (no yt-dlp base args — correct for journal 030 architecture)");
   }
 }
 

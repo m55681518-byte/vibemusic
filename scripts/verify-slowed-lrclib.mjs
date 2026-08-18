@@ -127,15 +127,18 @@ if (!lyrics) {
     fail("GB2: could not evaluate rescaleLrc: " + e.message);
   }
 
-  // ---- GB3: lookupLyrics must compute rescale ratio from LRC span ------------
+  // ---- GB3: lookupLyrics derives rescale from LRC span + record-duration
+  // fallback (journal 033/034 architecture) ------------------------------
   try {
     const lookup = lyrics.slice(lyrics.indexOf("export async function lookupLyrics"));
-    const spanAbsent = /span\s*=\s*lastTimestamp|lastTimestamp\s*\|\|\s*lrclib\.duration|const\s+span/.test(lookup);
-    const ratioSpan = /actualDurationSec\s*\/\s*(?:lastTimestamp|span|candidateLast|maxTime|lastTime)/i.test(lookup);
-    const ratioDur = /actualDurationSec\s*\/\s*(?:lastTimestamp|span|lrclib\.duration|recordDuration)/i.test(lookup);
-    const rescaleCalled = /rescaleLrc\s*\(/.test(lookup);
-    if (spanAbsent && ratioSpan && rescaleCalled && ratioDur) pass("GB3: lookupLyrics rescale uses LRC span with record-duration fallback");
-    else fail(`GB3: span-based rescale not wired (spanAbsent=${spanAbsent}, ratioSpan=${ratioSpan}, ratioDur=${ratioDur}, rescale=${rescaleCalled})`);
+    const spanDerived = /const\s+lastTimestamp\s*=\s*maxLrcTimestamp\(\s*synced\s*\)/.test(lookup);
+    const ratioWired = /rescaleRatioFor\(\s*actualDurationSec\s*,\s*lrclib\.duration\s*\?\?\s*0\s*,\s*lastTimestamp\s*\)/.test(lookup);
+    const applied = /if\s*\(\s*ratio\s*!==\s*null[\s\S]{0,80}rescaleLrc\(\s*synced\s*,\s*ratio\s*\)/.test(lookup);
+    const anchor = /const\s+anchor\s*=\s*recordDurationSec\s*>\s*0\s*\?\s*recordDurationSec\s*:\s*lrcSpanSec/.test(lyrics);
+    const ratio = /const\s+ratio\s*=\s*actualDurationSec\s*\/\s*anchor/.test(lyrics);
+    if (spanDerived && ratioWired && applied && anchor && ratio)
+      pass("GB3: lookupLyrics rescale uses LRC span via maxLrcTimestamp with record-duration fallback");
+    else fail(`GB3: span-based rescale not wired (span=${spanDerived}, ratioWired=${ratioWired}, applied=${applied}, anchor=${anchor}, ratio=${ratio})`);
   } catch (e) {
     fail("GB3: could not inspect lookupLyrics: " + e.message);
   }

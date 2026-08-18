@@ -39,21 +39,17 @@ if (!existsSafe(ytdlp)) {
 }
 
 // 3. Keep the impersonation flag (regression guard): must not have been removed.
-if (existsSafe(extract)) {
-  const src = readFileSync(extract, "utf8");
-  if (/--impersonate/.test(src) && /chrome-146/.test(src)) {
-    pass("extract.ts still passes --impersonate chrome-146");
-  } else {
-    fail("extract.ts lost the --impersonate chrome-146 flag");
-  }
-}
+// extract.ts is 100% external (journal 030) — the flag lives in ytdlp.ts only.
+// Generic `chrome` shorthand (journal 016) — curl_cffi bundles the latest.
 if (existsSafe(ytdlp)) {
   const src = readFileSync(ytdlp, "utf8");
-  if (/--impersonate/.test(src) && /chrome-146/.test(src)) {
-    pass("ytdlp.ts still passes --impersonate chrome-146");
+  if (/--impersonate/.test(src) && /chrome/.test(src)) {
+    pass("ytdlp.ts still passes --impersonate chrome");
   } else {
-    fail("ytdlp.ts lost the --impersonate chrome-146 flag");
+    fail("ytdlp.ts lost the --impersonate chrome flag");
   }
+} else {
+  fail("src/lib/ytdlp.ts missing");
 }
 
 function existsSafe(p) {
