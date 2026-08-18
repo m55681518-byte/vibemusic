@@ -15,7 +15,18 @@
  * pickLyricHit is a pure function over a Genius /api/search/multi payload,
  * and identifyTrackFromAudio NEVER throws (every failure resolves to null).
  */
+import { promises as fsp } from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { whisperTranscribe } from "./whisper";
+import { probeAudioDuration, ffmpegBinaryPath } from "./ytdlp";
+
+const execFileAsync = promisify(execFile);
+
+/** Slice the first N seconds for Whisper analysis when the track is long. */
+const sliceSeconds = 25;
+/** Only slice when the track exceeds this duration (seconds). */
+const SLICE_THRESHOLD_SECONDS = 30;
 
 /** A recognized track: the real song name + artist from a lyric-text hit. */
 export interface LyricHit {
@@ -113,10 +124,27 @@ export async function identifyTrackFromAudio(
   mp3Path: string,
   opts?: PickLyricHitOptions,
 ): Promise<LyricHit | null> {
+  let tempFile: string | null = null;
   try {
+    // Window sizing: probe duration, slice first 25s if track > 30s
+    // ffmpeg: -y -v error -t 25 -i <mp3> -acodec libmp3lame -q:a 7 <temp>
+    const duration = await probeAudioDuration(mp3Path);
+    let transcriptionPath = mp3Path;
+    if (duration !== null && duration > SLICE_THRESHOLD_SECONDS) {
+      tempFile = mp3Path + '.win.mp3';
+      await execFileAsync(ffmpegBinaryPath(), [
+        '-y', '-v', 'error',
+        '-t', String(sliceSeconds),
+        '-i', mp3Path,
+        '-acodec', 'libmp3lame', '-q:a', '7',
+        tempFile,
+      ], { timeout: 30_000 });
+      transcriptionPath = tempFile;
+    }
+
     // whisperTranscribe reads the mp3 and runs the parallel Gradio tier
     // (zero-key); a null/instrumental transcript yields no searchable text.
-    const transcript = await whisperTranscribe(mp3Path);
+    const transcript = await whisperTranscribe(transcriptionPath);
     const text = (transcript && transcript.plain ? transcript.plain : "").trim();
     if (text.length < 8) return null;
 
@@ -131,5 +159,9 @@ export async function identifyTrackFromAudio(
     return pickLyricHit(json.response as GeniusSearchResponse, opts);
   } catch {
     return null;
+  } finally {
+    if (tempFile) {
+      await fsp.unlink(tempFile).catch(() => undefined);
+    }
   }
 }

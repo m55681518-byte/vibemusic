@@ -31,6 +31,17 @@ function ffprobeBinaryPath(): string {
   return "ffprobe";
 }
 
+export function ffmpegBinaryPath(): string {
+  if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
+  const vendor = path.join(
+    process.cwd(),
+    "vendor",
+    process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg",
+  );
+  if (existsSync(vendor)) return vendor;
+  return "ffmpeg";
+}
+
 /**
  * Reads the REAL duration (seconds) of a stored audio file by probing it with
  * ffprobe. Used when extract-time metadata has no duration (e.g. cobalt
