@@ -38,7 +38,23 @@ import {
   type TrackMeta,
 } from "./store";
 import { cleanTrackMetadata } from "./lyrics";
+// PLACEHOLDER-title detection: TikTok registry labels ("Unknown - FullMix",
+// "original sound", "som original", "sound created by", empty titles)
+// are not real song names — audio identification must run for all of them.
 import { identifyTrackFromAudio } from "./identify";
+
+const GENERIC_MUSIC_TITLE = /^(?:original sound|som original)\s*-|sound created by|^unknown(?:\s*-\s*|$)|fullmix/i;
+
+/**
+ * Maps any TikTok registry placeholder title to a clean display name.
+ * Real song titles pass through unchanged.
+ */
+export function resolveDisplayIdentity(t: string | undefined | null) {
+  const val = (t || "").trim();
+  if (!val) return "TikTok Background Music";
+  if (/^(?:original sound|som original)\s*-|sound created by|^unknown(?:\s*-\s*|$)|fullmix/i.test(val)) return "TikTok Background Music";
+  return val;
+}
 
 const COBALT_MAX_ATTEMPTS = 3;
 const COBALT_RETRY_BACKOFF_MS = 2000;
@@ -155,12 +171,11 @@ async function writeTikTokTrack(url: string, id: string, mp3Path: string): Promi
 
   // "Original sound" clean fallback: TikTok names creator-made audio with a
   // generic placeholder ("original sound - <user>", "som original - <user>",
-  // "…sound created by…") that carries no real song info. Drop the placeholder,
-  // combine the remainder with the video caption, and let cleanTrackMetadata
-  // strip hashtags/@handles (and any "{artist} - " prefix) so a real
-  // "Artist - Song" pair can surface; adopt the cleaned values only when they
-  // yield a distinct, non-generic title.
-  const GENERIC_MUSIC_TITLE = /^(?:original sound|som original)\s*-|sound created by/i;
+  // "…sound created by…", "Unknown - FullMix", bare "Unknown") that carries
+  // no real song info. Drop the placeholder, combine the remainder with the
+  // video caption, and let cleanTrackMetadata strip hashtags/@handles (and any
+  // "{artist} - " prefix) so a real "Artist - Song" pair can surface; adopt
+  // the cleaned values only when they yield a distinct, non-generic title.
   const genericOriginalTitle = GENERIC_MUSIC_TITLE.test(title);
   if (genericOriginalTitle && data.title) {
     const stripped = title.replace(/^(?:original sound|som original)\s*-\s*[^\s]+/, "").trim();
@@ -175,28 +190,21 @@ async function writeTikTokTrack(url: string, id: string, mp3Path: string): Promi
     }
   }
 
-  // "Original sound" audio identification: when the audio is still a generic
-  // TikTok placeholder (the caption fallback above only surfaced a caption
-  // without a real "Artist - Song" pair — no " - " separator in the cleaned
-  // title, or the artist is still the video creator/Unknown), name the REAL
-  // track from the audio itself: zero-key Whisper transcription → Genius
-  // lyric-text search. A confident hit (matchedWords >= 5) overrides
-  // title/artist so Tier 1/2 lyrics search uses the actual song name; a
-  // null/weak hit keeps the fallback. Extraction is never blocked —
-  // identifyTrackFromAudio never throws.
-  const artistIsStillGeneric =
-    /Unknown/i.test(artist) ||
-    Boolean(
-      data.author &&
-        (artist === data.author.nickname?.trim() || artist === data.author.unique_id?.trim()),
-    );
-  if (genericOriginalTitle && (!title.includes(" - ") || artistIsStillGeneric) && mp3Path) {
+  // PLACEHOLDER audio identification: for ALL TikTok registry placeholder titles
+  // (original sound, Unknown - FullMix, etc.), attempt to name the REAL track
+  // from the audio itself: zero-key Whisper transcription → Genius lyric-text
+  // search. A confident hit (matchedWords >= 5) overrides title/artist so Tier
+  // 1/2 lyrics search uses the actual song name; a null/weak hit keeps the
+  // fallback. Extraction is never blocked — identifyTrackFromAudio never throws.
+  if (genericOriginalTitle && mp3Path) {
     const identified = await identifyTrackFromAudio(mp3Path);
     if (identified && identified.matchedWords >= 5) {
       title = identified.title;
       artist = identified.artist;
     }
   }
+  // Safety net: never serve a raw placeholder as the display title.
+  title = resolveDisplayIdentity(title);
 
   const track: TrackMeta = {
     id,
@@ -384,7 +392,12 @@ export async function getTrackInfo(rawUrl: string): Promise<ExtractResult> {
     // re-extract so the real audio replaces it.
     const stat = await fsp.stat(existing.mp3Path).catch(() => null);
     if (stat && stat.size > 0 && existing.sizeBytes > 0) {
-      return { track: existing, cached: true };
+      // Cache healing: if the stored title is still a registry placeholder
+      // (e.g. "Unknown - FullMix", "original sound - user"), do NOT serve it
+      // forever — re-extract so audio identification can resolve the real song.
+      if (!GENERIC_MUSIC_TITLE.test(existing.title) && (existing.title || "").trim()) {
+        return { track: existing, cached: true };
+      }
     }
     await fsp.unlink(existing.mp3Path).catch(() => undefined);
     await fsp.unlink(metaPathFor(id)).catch(() => undefined);

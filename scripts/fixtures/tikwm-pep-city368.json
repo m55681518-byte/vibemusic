@@ -1,0 +1,58 @@
+{
+ "code": 0,
+ "msg": "success",
+ "processed_time": 0.8272,
+ "data": {
+  "id": "7674686947591458069",
+  "region": "SO",
+  "title": "Pep_😭🩵#pepguardiola #manchestercity #foryoupage #viralvideo #football ",
+  "content_desc": [],
+  "cover": "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-p-0037/oouYQVGILIN8C91Ai1PwZuBziMfCAAzXCIQBb2~tplv-tiktokx-cropcenter-q:300:400:q70.jpeg?dr=8596&refresh_token=c644bd74&x-expires=1787090400&x-signature=RC8Xu3PMK4w3nUkLyhqv9qXOprA%3D&t=bacd0480&ps=933b5bde&shp=d05b14bd&shcp=1d1a97fc&idc=useast5&biz_tag=tt_video&s=AWEME_DETAIL&sc=cover",
+  "ai_dynamic_cover": "https://p19-common-sign.tiktokcdn-us.com/tos-alisg-p-0037/owZGx4qXE3GtIz3RLeAomggGHAewBmgFUeeBLM~tplv-tiktokx-origin.image?dr=8606&refresh_token=8a54a3b5&x-expires=1787090400&x-signature=EWN4pTwxu0omZwppcSz9e0yAqd8%3D&t=bacd0480&ps=4f5296ae&shp=d05b14bd&shcp=1d1a97fc&idc=useast5&biz_tag=tt_video&s=AWEME_DETAIL&sc=dynamic_cover",
+  "origin_cover": "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-p-0037/oAfArW7ZAbcIfm4VjnqCDw4clEQZQBFDIkOAfD~tplv-tiktokx-shrink-aq:360:360:q75.webp?dr=11731&refresh_token=c891d22f&x-expires=1787090400&x-signature=6cgpf3FYZSVxHXqKPm94jv2rGsw%3D&t=bacd0480&ps=d97f9a4f&shp=d05b14bd&shcp=1d1a97fc&idc=useast5&biz_tag=tt_video&s=AWEME_DETAIL&sc=feed_cover",
+  "duration": 19,
+  "play": "https://v16m.tiktokcdn-us.com/a1ecd74625d58eae6935d13c66cef393/6a83e361/video/tos/alisg/tos-alisg-pve-0037c001/oAV1A8fBuIz2IY1CN9TVGQLPBAzAuiuDiQBMEw/?a=1233&bti=OUBzOTg7QGo6OjZAL3AjLTAzYCMxNDNg&&bt=430&ft=74~WHDDwN4vVQQdGuIOnsdRz43ZqYlhDG54~hWLrK&mime_type=video_mp4&rc=NTRnZThpNTU1PGgzNDUzM0BpamVrd205cjl5ZDMzODczNEAzXy1jNWIyXl8xYDEtXmJjYSNeZGMzMmRjYi1hLS1kMWBzcw%3D%3D&vvpl=1&l=20260817224501D32B09BA08D65C2B9F99&btag=e000b8000",
+  "wmplay": "https://v16m.tiktokcdn-us.com/d6ab996d313a5447f8156ec1998521e8/6a83e361/video/tos/alisg/tos-alisg-pve-0037c001/o8iCEuNfP7LI8XCIM9Q1NQiuVQHB1ywAAYzEBA/?a=1233&bti=OUBzOTg7QGo6OjZAL3AjLTAzYCMxNDNg&&bt=929&eid=20480&ft=74~WHDDwN4vVQQdGuIOnsdRz43ZqYlhDG54~hWLrK&mime_type=video_mp4&rc=ZzMzO2hlZjlnaGVnO2hpOkBpamVrd205cjl5ZDMzODczNEA2NDVfXmIxNTMxMGAyYmBiYSNeZGMzMmRjYi1hLS1kMWBzcw%3D%3D&vvpl=1&l=20260817224501D32B09BA08D65C2B9F99&btag=e000b8000",
+  "size": 1099515,
+  "wm_size": 2372111,
+  "music": "https://v16-ies-music.tiktokcdn-us.com/f9bee6216fc2aa98dff53f506277b43e/6a8cc994/video/tos/alisg/tos-alisg-v-27dcd7/o0eIlvaFDDDAagqDJmFaAcMETEndEGvfo4CVSf/?a=583965&bti=OTg7QGo5QHM6OjZALTAzYCMvcCMxNDNg&&bt=125&ft=7g~atDDwN4vVQQdGuIOnsdRz43ZqYlhDG54~hWLrK&mime_type=audio_mpeg&rc=NjtmOTs2NTg5ZTxoOWQ5M0BpM3RkNG05cmV5ZDMzODU8NEBjXzNiNDQuXi0xYjFjYDMxYSNnaF9zMmRzYi1hLS1kMS1zcw%3D%3D&vvpl=1&l=20260817224501D32B09BA08D65C2B9F99&btag=e000f8000&shp=d05b14bd&shcp=-",
+  "music_info": {
+   "id": "7674687016486980368",
+   "title": "original sound - city_368",
+   "play": "https://v16-ies-music.tiktokcdn-us.com/f9bee6216fc2aa98dff53f506277b43e/6a8cc994/video/tos/alisg/tos-alisg-v-27dcd7/o0eIlvaFDDDAagqDJmFaAcMETEndEGvfo4CVSf/?a=583965&bti=OTg7QGo5QHM6OjZALTAzYCMvcCMxNDNg&&bt=125&ft=7g~atDDwN4vVQQdGuIOnsdRz43ZqYlhDG54~hWLrK&mime_type=audio_mpeg&rc=NjtmOTs2NTg5ZTxoOWQ5M0BpM3RkNG05cmV5ZDMzODU8NEBjXzNiNDQuXi0xYjFjYDMxYSNnaF9zMmRzYi1hLS1kMS1zcw%3D%3D&vvpl=1&l=20260817224501D32B09BA08D65C2B9F99&btag=e000f8000&shp=d05b14bd&shcp=-",
+   "cover": "https://p16-common-sign.tiktokcdn-us.com/tos-alisg-avt-0068/4cf777e189530c96d5e55dc84c1c66d1~tplv-tiktokx-cropcenter-q:1080:1080:q70.jpeg?dr=8837&refresh_token=54372006&x-expires=1787090400&x-signature=XZe8C5eMz%2BzDjciIZHqUBSaePps%3D&t=223449c4&ps=87d6e48a&shp=d05b14bd&shcp=1d1a97fc&idc=useast5&sc=avatar&s=AWEME_DETAIL",
+   "author": "17",
+   "original": true,
+   "duration": 19,
+   "album": ""
+  },
+  "play_count": 478777,
+  "digg_count": 86992,
+  "comment_count": 998,
+  "share_count": 4304,
+  "download_count": 3832,
+  "collect_count": 5450,
+  "create_time": 1786902317,
+  "anchors": null,
+  "anchors_extras": "",
+  "is_ad": false,
+  "commerce_info": {
+   "adv_promotable": false,
+   "auction_ad_invited": false,
+   "branded_content_type": 0,
+   "is_diversion_ad": 0,
+   "organic_log_extra": "{\"req_id\":\"20260817224501D32B09BA08D65C2B9F99\"}",
+   "with_comment_filter_words": false
+  },
+  "commercial_video_info": "",
+  "item_comment_settings": 0,
+  "mentioned_users": "",
+  "author": {
+   "id": "7661296912582968336",
+   "unique_id": "city_368",
+   "nickname": "17",
+   "avatar": "https://p19-common-sign.tiktokcdn-us.com/tos-alisg-avt-0068/4cf777e189530c96d5e55dc84c1c66d1~tplv-tiktokx-cropcenter-q:300:300:q70.jpeg?dr=8834&refresh_token=858a161a&x-expires=1787090400&x-signature=2fqukHDG1zQFuvti9126R4rpo7s%3D&t=223449c4&ps=87d6e48a&shp=d05b14bd&shcp=1d1a97fc&idc=useast5&sc=avatar&s=AWEME_DETAIL"
+  },
+  "is_nff_or_nr": false
+ }
+}
