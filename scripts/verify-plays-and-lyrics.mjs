@@ -115,20 +115,22 @@ const src = (name) => {
 }
 
 // G5 — PlayerView must surface ALL lyrics states (synced/plain/instrumental)
-// and STAY streaming from /api/audio (no backslide to blob-gating).
+// and keep the /api/audio streaming source as fallback (no backslide to
+// blob-only playback; the <audio> element never points at ?download=1).
 {
   const pth = resolve(root, "src/components/PlayerView.tsx");
   if (!existsSync(pth)) {
     fail("G5: PlayerView.tsx missing");
   } else {
     const p = readFileSync(pth, "utf8");
-    const streams = /src=\{?[`"]\/api\/audio\/\$\{meta\.id\}`?/.test(p);
+    const apiFallback = /\/api\/audio\/\$\{meta\.id\}/.test(p);
+    const noDownloadInAudio = !/<audio[\s\S]{0,200}\?download=1/.test(p);
     const hasSynced = /lyrics\.synced/.test(p);
     const hasPlain = /lyrics\.plain/.test(p);
     const hasInst = /isInstrumental/.test(p);
     const lyricState = hasSynced && hasPlain && hasInst;
-    if (streams && lyricState) pass("G5: PlayerView streams audio + handles synced/plain/instrumental");
-    else fail(`G5: PlayerView regression (stream=${streams}, synced=${hasSynced}, plain=${hasPlain}, instrumental=${hasInst})`);
+    if (apiFallback && noDownloadInAudio && lyricState) pass("G5: PlayerView handles synced/plain/instrumental + API audio fallback");
+    else fail(`G5: PlayerView regression (apiFallback=${apiFallback}, noDownload=${noDownloadInAudio}, synced=${hasSynced}, plain=${hasPlain}, instrumental=${hasInst})`);
   }
 }
 

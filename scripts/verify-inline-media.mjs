@@ -71,10 +71,10 @@ if (!existsSync(player)) {
   fail("PlayerView missing (check 4)");
 } else {
   const src = readFileSync(player, "utf8");
-  const audioPlain = /<audio[\s\S]{0,200}src=\{?\s*`?\/api\/audio\/\$\{meta\.id\}[\s\S]{0,40}\/?`?\s*\}?/.test(src)
-    && !/<audio[\s\S]{0,200}\?download=1/.test(src);
-  if (audioPlain) pass("PlayerView <audio> src is plain media URL (no download param)");
-  else fail("PlayerView <audio> src must be plain /api/audio/{id}");
+  const apiFallback = /\/api\/audio\/\$\{meta\.id\}/.test(src);
+  const noDownloadInAudio = !/<audio[\s\S]{0,200}\?download=1/.test(src);
+  if (apiFallback && noDownloadInAudio) pass("PlayerView <audio> src is media-safe (API fallback, no download param)");
+  else fail("PlayerView <audio> src must keep the /api/audio/{id} fallback and never use ?download=1");
 }
 
 console.log(`\n[verify-inline-media] ${passed}/${passed + failed} checks passed`);

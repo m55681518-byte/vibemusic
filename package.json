@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "test": "node --import ./tests/loader.mjs --test \"tests/*.test.mjs\"",
     "typecheck": "tsc --noEmit",
     "postinstall": "node scripts/install-ytdlp.mjs"
   },

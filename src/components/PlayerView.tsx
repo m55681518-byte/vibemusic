@@ -5,6 +5,7 @@ import Link from "next/link";
 import type { TrackMeta } from "@/lib/store";
 import { parseLrc, sanitizeFilename, bytesToBase64 } from "@/lib/utils";
 import { LyricsView } from "@/components/LyricsView";
+import { cachedAudioUrl, rememberAudio, cachedLyrics, rememberLyrics } from "@/lib/client-cache";
 
 type Status = "loading-tags" | "fetching-lyrics" | "ready" | "error";
 
@@ -58,6 +59,8 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
   const [isInstrumental, setIsInstrumental] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
 
+  const [audioSrc, setAudioSrc] = useState<string>(`/api/audio/${meta.id}`);
+
   const audioRef = useRef<HTMLAudioElement>(null);
 
   const resetTimers = useCallback(() => {
@@ -81,46 +84,87 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
         // fetching the whole file into a blob.
         const audioUrl = `/api/audio/${meta.id}`;
 
+        // Check local IndexedDB cache first (survives server spin-down).
+        let blobUrl: string | null = null;
+        try {
+          blobUrl = await cachedAudioUrl(meta.id);
+        } catch {
+          /* IndexedDB unavailable or corrupt — proceed to network */
+        }
+
+        if (!cancelled) {
+          if (blobUrl) setAudioSrc(blobUrl);
+        }
+
         // Fetch metadata (ID3 tags / embedded cover art) in the background to
         // enrich title/artist/cover. Neither playback nor download waits on it.
-        const res = await fetch(audioUrl);
-        if (!res.ok) throw new Error(`Audio unavailable (${res.status})`);
-        const blob = await res.blob();
+        let blob: Blob | null = null;
+        try {
+          const res = await fetch(blobUrl || audioUrl);
+          if (!res.ok) throw new Error(`Audio unavailable (${res.status})`);
+          blob = await res.blob();
+        } catch {
+          // If we already have a cached blob URL, playback can still proceed.
+          if (blobUrl) {
+            if (!cancelled) setStatus("fetching-lyrics");
+          } else {
+            throw new Error(`Audio unavailable`);
+          }
+        }
 
         if (cancelled) return;
 
-        const tags = await parseId3(blob);
-        if (tags.title) setTitle(tags.title);
-        if (tags.artist) setArtist(tags.artist);
-        if (tags.coverDataUrl) {
-          setCoverDataUrl(tags.coverDataUrl);
-          setFallbackThumb(null);
+        let tags: ParsedTags = {};
+        if (blob) {
+          tags = await parseId3(blob);
+          if (tags.title) setTitle(tags.title);
+          if (tags.artist) setArtist(tags.artist);
+          if (tags.coverDataUrl) {
+            setCoverDataUrl(tags.coverDataUrl);
+            setFallbackThumb(null);
+          }
+          // Store fetched blob in IndexedDB for offline playback.
+          if (!blobUrl) rememberAudio(meta.id, blob).catch(() => {});
         }
 
         setStatus("fetching-lyrics");
 
         try {
-          const lyricsRes = await fetch(
-            `/api/lyrics?artist=${encodeURIComponent(tags.artist || meta.artist)}&title=${encodeURIComponent(
-              tags.title || meta.title,
-            )}&id=${encodeURIComponent(meta.id)}`,
-          );
-          if (lyricsRes.ok) {
-            const lyrics = (await lyricsRes.json()) as {
-              synced?: string | null;
-              plain?: string | null;
-              isInstrumental?: boolean;
-            };
-            if (cancelled) return;
-            if (lyrics.isInstrumental) {
-              // Track is confirmed instrumental — show the beats-only state.
+          const cached = await cachedLyrics(meta.id);
+          if (cancelled) return;
+          if (cached) {
+            if (cached.isInstrumental) {
               setIsInstrumental(true);
-            } else if (lyrics.synced) {
-              setSynced(parseLrc(lyrics.synced));
+            } else if (cached.synced) {
+              setSynced(parseLrc(cached.synced));
               setHasLyrics(true);
-            } else if (lyrics.plain) {
-              setPlain(lyrics.plain);
+            } else if (cached.plain) {
+              setPlain(cached.plain);
               setHasLyrics(true);
+            }
+          } else {
+            const lyricsRes = await fetch(
+              `/api/lyrics?artist=${encodeURIComponent(tags?.artist || meta.artist)}&title=${encodeURIComponent(
+                tags?.title || meta.title,
+              )}&id=${encodeURIComponent(meta.id)}`,
+            );
+            if (lyricsRes.ok) {
+              const lyrics = (await lyricsRes.json()) as {
+                synced?: string | null;
+                plain?: string | null;
+                isInstrumental?: boolean;
+              };
+              if (cancelled) return;
+              rememberLyrics(meta.id, { synced: lyrics.synced, plain: lyrics.plain, isInstrumental: lyrics.isInstrumental }).catch(() => {});
+              if (lyrics.isInstrumental) {
+                setIsInstrumental(true);
+              } else if (lyrics.synced) {
+                setSynced(parseLrc(lyrics.synced));
+                setHasLyrics(true);
+              } else if (lyrics.plain) {
+                setPlain(lyrics.plain);
+                setHasLyrics(true);
+              }
             }
           }
         } catch {
@@ -209,7 +253,7 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
           ref={audioRef}
           controls
           preload="metadata"
-          src={`/api/audio/${meta.id}`}
+          src={audioSrc}
           className="cp-audio"
         />
 
