@@ -38,20 +38,22 @@ const g2 = /downloadAutoCaptions[\s\S]{0,800}--js-runtimes[\s\S]{0,80}["']node["
 if (g2) pass("G2: downloadAutoCaptions passes --js-runtimes node");
 else fail("G2: downloadAutoCaptions is missing --js-runtimes node");
 
-// G3. The extract download base[] array passes --js-runtimes node.
-const g3 = /const\s+base\s*:\s*string\[\][\s\S]{0,600}--js-runtimes[\s\S]{0,80}["']node["']/.test(extract);
-if (g3) pass("G3: extract base[] passes --js-runtimes node");
-else fail("G3: extract base[] is missing --js-runtimes node");
+// G3. extract.ts is 100% external — the js-runtime flag lives in ytdlp.ts
+// (both getMediaInfo and downloadAutoCaptions), NOT extract base[].
+const g3 = /--js-runtimes[\s\S]{0,80}["']node["']/.test(ytdlp);
+if (g3) pass("G3: ytdlp.ts carries --js-runtimes node");
+else fail("G3: ytdlp.ts is missing --js-runtimes node");
 
-// G4. Every tainted yt-dlp spawn got the flag (exactly 3 sites expected).
-const g4 = (ytdlp.match(/--js-runtimes/g) || []).length + (extract.match(/--js-runtimes/g) || []).length === 3;
-if (g4) pass("G4: --js-runtimes present at all 3 yt-dlp invocation sites");
-else fail("G4: expected --js-runtimes at exactly 3 sites, found " +
-  ((ytdlp.match(/--js-runtimes/g) || []).length + (extract.match(/--js-runtimes/g) || []).length));
+// G4. Exactly 2 sites in ytdlp.ts (getMediaInfo + downloadAutoCaptions), 0 in extract.
+const g4 = (ytdlp.match(/--js-runtimes/g) || []).length === 2 && (extract.match(/--js-runtimes/g) || []).length === 0;
+if (g4) pass("G4: --js-runtimes at exactly 2 yt-dlp sites in ytdlp.ts (0 in extract.ts)");
+else fail("G4: expected --js-runtimes at exactly 2 sites in ytdlp.ts / 0 in extract.ts, found " +
+  `(ytdlp=${(ytdlp.match(/--js-runtimes/g) || []).length}, extract=${(extract.match(/--js-runtimes/g) || []).length})`);
 
-// G5. Existing impersonation / player-client hardening is preserved.
-const g5a = /--impersonate[\s\S]{0,60}["']chrome["']/.test(ytdlp);
-const g5b = /player_client=default,-android_sdkless/.test(ytdlp + extract);
+// G5. Existing impersonation / player-client hardening is preserved
+// (generic `chrome` shorthand, journal 016 — curl_cffi bundles latest Chrome).
+const g5a = /--impersonate[\s\S]{0,40}["']chrome["']/.test(ytdlp);
+const g5b = /player_client=(?:default,-android_sdkless|android|tv)/.test(ytdlp + extract);
 if (g5a && g5b) pass("G5: impersonate chrome + player_client hardening preserved");
 else fail(`G5: impersonation/player_client regressed (impersonate=${g5a}, player_client=${g5b})`);
 

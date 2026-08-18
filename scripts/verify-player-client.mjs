@@ -1,49 +1,57 @@
-// Acceptance gate for Turn B: youtube:player_client=android bypass for datacenter bot wall.
-// Checks (hard):
-//  1. src/lib/extract.ts base args include --extractor-args "youtube:player_client=android"
-//  2. src/lib/ytdlp.ts getVideoInfo args include --extractor-args "youtube:player_client=android"
-//  3. Both still pass --impersonate chrome-146 (regression guard)
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+// Acceptance gate: YouTube datacenter bot-wall bypass via player-client
+// variants + browser impersonation, CURRENT architecture (journal 016/030):
+//   - extract.ts is 100% external (TikWM/cobalt) — NO yt-dlp args there.
+//   - src/lib/ytdlp.ts is the ONLY yt-dlp runner; PLAYER_CLIENT_VARIANTS
+//     tries `default,-android_sdkless` first, then `tv` (the YouTube-on-TV
+//     embedded player is generally NOT blocked on server IPs).
+//   - Both invocation sites (getMediaInfo, downloadAutoCaptions) pass
+//     --impersonate chrome (generic shorthand — curl_cffi bundles latest).
+// Exit 0 = accept, 1 = reject.
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const root = resolve(here, "..");
-const extract = resolve(root, "src/lib/extract.ts");
-const ytdlp = resolve(root, "src/lib/ytdlp.ts");
-
+const root = resolve(import.meta.dirname, "..");
 let passed = 0;
 let failed = 0;
-const pass = (msg) => { console.log("PASS", msg); passed++; };
-const fail = (msg) => { console.log("FAIL", msg); failed++; };
+const pass = (m) => { console.log("PASS", m); passed++; };
+const fail = (m) => { console.log("FAIL", m); failed++; };
 
-function existsSafe(p) {
-  try { readFileSync(p); return true; } catch { return false; }
-}
-
-const needPlayerClient = /player_client=android/;
-const needImpersonate = /--impersonate/;
-const needChrome146 = /chrome-146/;
-
-if (existsSafe(extract)) {
-  const src = readFileSync(extract, "utf8");
-  if (needPlayerClient.test(src)) pass("extract.ts passes youtube:player_client=android");
-  else fail("extract.ts missing youtube:player_client=android");
-  if (needImpersonate.test(src) && needChrome146.test(src)) pass("extract.ts still passes --impersonate chrome-146");
-  else fail("extract.ts lost --impersonate chrome-146");
-} else {
-  fail("src/lib/extract.ts missing");
-}
-
-if (existsSafe(ytdlp)) {
-  const src = readFileSync(ytdlp, "utf8");
-  if (needPlayerClient.test(src)) pass("ytdlp.ts passes youtube:player_client=android");
-  else fail("ytdlp.ts missing youtube:player_client=android");
-  if (needImpersonate.test(src) && needChrome146.test(src)) pass("ytdlp.ts still passes --impersonate chrome-146");
-  else fail("ytdlp.ts lost --impersonate chrome-146");
-} else {
+const ytdlpPath = resolve(root, "src/lib/ytdlp.ts");
+const extractPath = resolve(root, "src/lib/extract.ts");
+if (!existsSync(ytdlpPath)) {
   fail("src/lib/ytdlp.ts missing");
+} else {
+  const src = readFileSync(ytdlpPath, "utf8");
+
+  if (/player_client=default,-android_sdkless/.test(src))
+    pass("ytdlp.ts PLAYER_CLIENT_VARIANTS tries default,-android_sdkless first");
+  else fail("ytdlp.ts missing player_client=default,-android_sdkless variant");
+
+  if (/player_client=tv/.test(src))
+    pass("ytdlp.ts has tv client failover variant");
+  else fail("ytdlp.ts missing player_client=tv failover variant");
+
+  if (/getMediaInfo[\s\S]{0,600}--impersonate[\s\S]{0,60}["']chrome["']/.test(src))
+    pass("getMediaInfo passes --impersonate chrome");
+  else fail("getMediaInfo missing --impersonate chrome");
+
+  if (/downloadAutoCaptions[\s\S]{0,1200}--impersonate[\s\S]{0,60}["']chrome["']/.test(src))
+    pass("downloadAutoCaptions passes --impersonate chrome");
+  else fail("downloadAutoCaptions missing --impersonate chrome");
+}
+
+if (!existsSync(extractPath)) {
+  fail("src/lib/extract.ts missing");
+} else {
+  // Strip comments first — extract.ts documents the pre-rewrite yt-dlp path
+  // in a legacy note (journal 030 retrospect); only CODE matters for the guard.
+  const extract = readFileSync(extractPath, "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/[^\n]*/g, "");
+  if (/--impersonate|player_client/.test(extract))
+    fail("extract.ts should NOT carry yt-dlp impersonate/player_client args (100% external since journal 030)");
+  else pass("extract.ts has no yt-dlp impersonate/player_client args in code (external path correct)");
 }
 
 console.log(`\n[verify-player-client] ${passed}/${passed + failed} checks passed`);
-if (failed > 0) process.exit(1);
+process.exit(failed ? 1 : 0);

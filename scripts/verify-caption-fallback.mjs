@@ -109,14 +109,17 @@ const extractSrc = existsSync(extract) ? readFileSync(extract, "utf8") : "";
   }
 }
 
-// Check 6: stored-srt args regression guard in extract.ts.
+// Check 6: stored-srt args regression guard — live in ytdlp.ts downloadAutoCaptions
+// (extract.ts is 100% external since journal 030; captions come from ytdlp.ts).
 {
-  const autoSubs = /--write-auto-subs/.test(extractSrc);
-  const convertSrt = /--convert-subs/.test(extractSrc) && /srt/.test(extractSrc);
+  const ytdlp = resolve(root, "src/lib/ytdlp.ts");
+  const ytdlpSrc = existsSync(ytdlp) ? readFileSync(ytdlp, "utf8") : "";
+  const autoSubs = /--write-auto-subs/.test(ytdlpSrc);
+  const convertSrt = /--convert-subs/.test(ytdlpSrc) && /srt/.test(ytdlpSrc);
   if (autoSubs && convertSrt) {
-    pass("extract.ts still requests auto-captions + SRT conversion (stored path intact)");
+    pass("ytdlp.ts downloadAutoCaptions requests auto-captions + SRT conversion (stored path intact)");
   } else {
-    fail(`extract.ts lost --write-auto-subs/--convert-subs srt (autoSubs=${autoSubs}, convert=${convertSrt})`);
+    fail(`ytdlp.ts lost --write-auto-subs/--convert-subs srt (autoSubs=${autoSubs}, convert=${convertSrt})`);
   }
 }
 
