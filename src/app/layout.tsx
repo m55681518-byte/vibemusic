@@ -4,6 +4,7 @@ import "./app.css";
 import { SwRegister } from "@/components/SwRegister";
 import { Logo } from "@/components/Logo";
 import { AmbientBackdrop } from "@/components/AmbientBackdrop";
+import { MiniPlayer } from "@/components/MiniPlayer";
 
 export const metadata: Metadata = {
   applicationName: "VibeMusic",
@@ -43,6 +44,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <footer className="foot">
           <p>VibeMusic · extract, tag, play, keep.</p>
         </footer>
+        <MiniPlayer />
         <SwRegister />
       </body>
     </html>

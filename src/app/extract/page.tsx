@@ -6,17 +6,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 type Phase =
   | { kind: "idle" }
-  | { kind: "working"; step: string }
-  | { kind: "done" }
+  | { kind: "metadata"; meta: { id: string; title: string; artist: string; thumbnail?: string } }
+  | { kind: "working"; meta: { id: string; title: string; artist: string; thumbnail?: string } }
+  | { kind: "done"; id: string }
   | { kind: "error"; message: string; details?: string };
-
-const STEPS = [
-  "Contacting extractor…",
-  "Fetching media metadata…",
-  "Downloading audio stream…",
-  "Converting to MP3…",
-  "Embedding cover art + ID3 tags…",
-];
 
 interface ExtractResult {
   id: string;
@@ -31,6 +24,16 @@ class ExtractError extends Error {
     super(message);
     this.name = "ExtractError";
   }
+}
+
+async function runMeta(url: string) {
+  const res = await fetch("/api/extract-meta", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    cache: "no-store",
+    body: JSON.stringify({ url }),
+  });
+  return res.json();
 }
 
 async function runExtract(url: string): Promise<ExtractResult> {
@@ -55,45 +58,33 @@ function ExtractFlow() {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
 
   useEffect(() => {
-    if (phase.kind !== "working") return;
-    if (!url) return;
-    const t = setTimeout(() => {
-      setPhase((p) => {
-        if (p.kind !== "working") return p;
-        const next = STEPS.indexOf(p.step) + 1;
-        return { ...p, step: STEPS[next % STEPS.length] };
-      });
-    }, 1800);
-    return () => clearTimeout(t);
-  }, [phase, url]);
-
-  useEffect(() => {
     if (!url) {
       setPhase({ kind: "error", message: "No URL provided." });
       return;
     }
     let cancelled = false;
-    setPhase({ kind: "working", step: STEPS[0] });
 
     (async () => {
+      // STEP 1: Instant metadata (~100ms) — render player UI immediately
       try {
-        const data = await runExtract(url);
+        const meta = await runMeta(url);
         if (cancelled) return;
-        setPhase({ kind: "done" });
-        router.replace(`/player/${data.id}`);
+        if (meta && meta.id) {
+          setPhase({ kind: "metadata", meta });
+          // STEP 2: Process audio in background — never block screen
+          setPhase({ kind: "working", meta });
+          const result = await runExtract(url);
+          if (cancelled) return;
+          setPhase({ kind: "done", id: result.id });
+          router.replace(`/player/${result.id}`);
+        }
       } catch (err) {
         if (cancelled) return;
-        setPhase({
-          kind: "error",
-          message: err instanceof Error ? err.message : "Extraction failed.",
-          details: err instanceof ExtractError ? err.details : undefined,
-        });
+        setPhase({ kind: "error", message: err instanceof Error ? err.message : "Extraction failed.", details: err instanceof ExtractError ? err.details : undefined });
       }
     })();
 
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [url, router]);
 
   return (
@@ -104,14 +95,34 @@ function ExtractFlow() {
         </p>
       )}
 
-      {phase.kind === "working" && (
-        <div className="working">
-          <span className="spinner" aria-hidden="true" />
-          <h2>Extracting audio</h2>
-          <p className="muted">{phase.step}</p>
-          <p className="muted small">
-            Large videos can take a minute or two to download and convert.
+      {(phase.kind === "metadata" || phase.kind === "working") && (
+        <div className="instant-preview" style={{ animation: "fadeIn 0.3s ease" }}>
+          <div className="preview-cover">
+            {phase.meta.thumbnail ? (
+              <img src={phase.meta.thumbnail} alt="" style={{ width: 160, height: 160, objectFit: "cover", borderRadius: 12, boxShadow: "0 10px 30px rgba(0,0,0,0.4)" }} />
+            ) : (
+              <div style={{ width: 160, height: 160, background: "linear-gradient(135deg, #2a2a2a, #1a1a1a)", borderRadius: 12 }} />
+            )}
+          </div>
+          <h2 className="preview-title" style={{ marginTop: 16, fontSize: 20, fontWeight: 600 }}>{phase.meta.title}</h2>
+          <p className="muted" style={{ marginBottom: 8 }}>{phase.meta.artist}</p>
+          <p className="muted small" style={{ animation: "pulse 2s infinite" }}>
+            Processing audio in background... <span aria-hidden="true">✨</span>
           </p>
+          {/* Subtle glowing bottom toast — never a blocking modal */}
+          <div className="glow-toast" style={{
+            marginTop: 24,
+            padding: "12px 20px",
+            borderRadius: 9999,
+            background: "rgba(255,255,255,0.05)",
+            backdropFilter: "blur(12px)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            boxShadow: "0 0 20px rgba(100,200,255,0.15)",
+            fontSize: 14,
+            color: "#ccc"
+          }}>
+            Audio stream initializing — playback starts in ~2s
+          </div>
         </div>
       )}
 
@@ -128,14 +139,6 @@ function ExtractFlow() {
           <Link className="btn" href={`/extract?url=${encodeURIComponent(url || "https://")}`}>
             Try again
           </Link>
-        </div>
-      )}
-
-      {phase.kind === "done" && (
-        <div className="working">
-          <span className="spinner" aria-hidden="true" />
-          <h2>Almost there…</h2>
-          <p className="muted">Preparing your player.</p>
         </div>
       )}
     </section>

@@ -43,6 +43,9 @@ import { cleanTrackMetadata } from "./lyrics";
 // are not real song names — audio identification must run for all of them.
 import { identifyTrackFromAudio } from "./identify";
 import { fetchIdentifiedAudio } from "./clean-audio";
+import { resolveSmartTrack } from "./smart-resolve";
+import { searchItunes, getPristineArtUrl } from "./itunes";
+import { ytdlpBinaryPath, extractAudioToFile, probeAudioDuration } from "./ytdlp";
 
 // Self-contained generic TikTok title detector.
 // CRITICAL: all regex literals are inline — no module-scope refs —
@@ -470,16 +473,120 @@ export async function getTrackInfo(rawUrl: string): Promise<ExtractResult> {
   }
 }
 
+
+async function tryYtdlpDirect(url: string, id: string, mp3Path: string): Promise<TrackMeta> {
+  const dir = storageDir();
+  await fsp.mkdir(dir, { recursive: true });
+  const tmpDir = path.join(dir, ".tmp_" + id);
+  await fsp.mkdir(tmpDir, { recursive: true });
+  const args = [
+    "--impersonate", "chrome",
+    "--no-playlist",
+    "--no-warnings",
+    "-x", "--audio-format", "mp3", "--audio-quality", "0",
+    "--output", path.join(tmpDir, "%(id)s.%(ext)s"),
+    url,
+  ];
+  try {
+    await extractAudioToFile(args);
+  } catch {
+    // yt-dlp binary or network failure — propagate so caller can handle
+  }
+  const files = await fsp.readdir(tmpDir).catch(() => [] as string[]);
+  const mp3File = files.find(f => f.endsWith(".mp3"));
+  if (!mp3File) throw new Error("yt-dlp produced no MP3");
+  const src = path.join(tmpDir, mp3File);
+  await fsp.rename(src, mp3Path).catch(async () => {
+    await fsp.copyFile(src, mp3Path);
+    await fsp.unlink(src).catch(() => undefined);
+  });
+  // Clean up temp dir
+  await fsp.rmdir(tmpDir).catch(() => undefined);
+  const probedDuration = await probeAudioDuration(mp3Path);
+  if (probedDuration === null) {
+    await fsp.unlink(mp3Path).catch(() => undefined);
+    throw new Error("yt-dlp audio not playable");
+  }
+  // Try to identify title/artist from URL or metadata
+  const videoId = mp3File.replace(/\.mp3$/i, "");
+  const meta = await loadMeta(id);
+  const track: TrackMeta = {
+    id,
+    url,
+    title: meta?.title || "Unknown Track",
+    artist: meta?.artist || "Unknown Artist",
+    album: undefined,
+    duration: probedDuration,
+    thumbnail: meta?.thumbnail || undefined,
+    webpageUrl: url,
+    extractor: "yt-dlp",
+    mp3Path,
+    sizeBytes: (await fsp.stat(mp3Path).catch(() => ({ size: 0 }))).size,
+    createdAt: Date.now(),
+  };
+  // Smart metadata / artwork enrichment
+  try {
+    const itunesRes = await searchItunes((track.title || "") + " " + (track.artist || ""));
+    if (itunesRes) {
+      const art = getPristineArtUrl(itunesRes);
+      if (art) track.thumbnail = art;
+    }
+  } catch {}
+  await saveMeta(track);
+  return track;
+}
+
 async function doExtract(url: string, id: string): Promise<ExtractResult> {
   const dir = storageDir();
   await fsp.mkdir(dir, { recursive: true });
   const mp3Path = mp3PathFor(id);
 
+  // SMART RESOLUTION ENGINE: for TikTok / YT Shorts / IG Reels, do NOT
+  // extract the 20-second video audio. Scrape metadata, query YouTube Music
+  // for the official full-length studio track, and pass the official YTM link
+  // to Cobalt. This runs silently — never blocks the UI.
+  const isShortForm = /tiktok\.com|youtube\.com\/shorts\/|instagram\.com\/reel\//i.test(url);
+  if (isShortForm) {
+    try {
+      const smart = await resolveSmartTrack(url);
+      if (smart.officialUrl && smart.officialUrl !== url && smart.officialUrl.includes("music.youtube")) {
+        // Pass official YTM link to cobalt for full-length studio audio
+        const track = await tryCobaltFallback(smart.officialUrl, id, mp3Path);
+        // Enrich meta with scraped title/artist and smart thumbnail
+        const enriched: TrackMeta = {
+          ...track,
+          title: smart.title || track.title,
+          artist: smart.artist || track.artist,
+          thumbnail: smart.thumbnail || track.thumbnail,
+          url: smart.officialUrl,
+          webpageUrl: smart.officialUrl,
+        };
+        await saveMeta(enriched);
+        return { track: enriched, cached: false };
+      }
+    } catch {
+      // Smart resolution failed — fall back to TikWM / cobalt as before
+    }
+  }
+
   // TikTok shortlinks take the TikWM fast-track; every other URL goes straight
-  // to the cobalt pool (retry loop + backoff below). No local yt-dlp attempt.
-  const track = isTikTokUrl(url)
-    ? await writeTikTokTrack(url, id, mp3Path)
-    : await tryCobaltFallback(url, id, mp3Path);
+  // to the cobalt pool (retry loop + backoff below). If both fail (e.g. anti-bot
+  // or promo page), fall back to local yt-dlp which can often access the stream
+  // where Cobalt/TikWM are blocked.
+  let track: TrackMeta;
+  try {
+    track = isTikTokUrl(url)
+      ? await writeTikTokTrack(url, id, mp3Path)
+      : await tryCobaltFallback(url, id, mp3Path);
+  } catch (firstErr) {
+    // Fallback: local yt-dlp direct extraction (works where external APIs are blocked)
+    try {
+      track = await tryYtdlpDirect(url, id, mp3Path);
+    } catch (ytdlpErr) {
+      // If yt-dlp also fails (missing binary / total blockage), throw the original
+      throw firstErr;
+    }
+  }
 
   pruneStorage().catch(() => undefined);
   return { track, cached: false };
