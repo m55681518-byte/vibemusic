@@ -17,6 +17,14 @@ export function ytdlpBinaryPath(): string {
     process.platform === "win32" ? "yt-dlp.exe" : "yt-dlp",
   );
   if (existsSync(vendor)) return vendor;
+  const systemPaths = [
+    "/usr/local/bin/yt-dlp",
+    "/usr/bin/yt-dlp",
+    "/bin/yt-dlp",
+  ];
+  for (const p of systemPaths) {
+    if (existsSync(p)) return p;
+  }
   return "yt-dlp";
 }
 
