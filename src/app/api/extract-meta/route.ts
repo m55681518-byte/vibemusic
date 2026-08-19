@@ -1,12 +1,13 @@
 import { NextResponse } from "next/server";
-import { normalizeUrl, extractValidUrl, isTikTokUrl } from "@/lib/extract";
+import { normalizeUrl, isTikTokUrl } from "@/lib/extract";
+import { idForUrl } from "@/lib/store";
 
 export async function POST(request: Request) {
   try {
     const body = await request.json();
     const rawUrl = body?.url || "";
     const url = normalizeUrl(rawUrl);
-    const id = require("@/lib/store").idForUrl(url);
+    const id = idForUrl(url);
     
     // Fast metadata only — no audio download
     let title = "Loading…";
