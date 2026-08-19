@@ -1,0 +1,158 @@
+/* --- Home Feed --- */
+.home-section {
+  margin-block: 16px 24px;
+}
+
+.home-section-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.speed-dial-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.speed-dial-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 14px 8px;
+  text-decoration: none;
+  color: var(--text);
+  transition: transform 0.12s, filter 0.15s;
+}
+
+.speed-dial-item:hover {
+  filter: brightness(1.1);
+  text-decoration: none;
+}
+
+.speed-dial-thumb {
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+  background: var(--card-2);
+}
+
+.speed-dial-title {
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.speed-dial-artist {
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-align: center;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.mood-chips {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.mood-chip {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.mood-chip:hover {
+  background: var(--card-2);
+}
+
+.mood-chip.active {
+  background: linear-gradient(100deg, var(--accent), var(--accent-2));
+  border-color: transparent;
+  color: #fff;
+}
+
+.row-scroller {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 160px;
+  padding-block: 4px;
+}
+
+.row-item {
+  flex: 0 0 120px;
+  text-decoration: none;
+  color: var(--text);
+}
+
+.row-item:hover {
+  text-decoration: none;
+}
+
+.row-item-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px;
+  transition: transform 0.12s, filter 0.15s;
+}
+
+.row-item:hover .row-item-inner {
+  filter: brightness(1.08);
+}
+
+.row-item-thumb {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 10px;
+  background: var(--card-2);
+}
+
+.row-item-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-item-artist {
+  font-size: 0.72rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* --- Ambient Backdrop --- */
+.ambient-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: radial-gradient(120% 120% at 50% 0%, var(--ambient-color, rgba(0,0,0,0)) 0%, transparent 60%);
+  opacity: 0.5;
+  transition: opacity 600ms;
+  pointer-events: none;
+}

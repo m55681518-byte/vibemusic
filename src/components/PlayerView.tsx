@@ -6,6 +6,8 @@ import type { TrackMeta } from "@/lib/store";
 import { parseLrc, sanitizeFilename, bytesToBase64 } from "@/lib/utils";
 import { LyricsView } from "@/components/LyricsView";
 import { cachedAudioUrl, rememberAudio, cachedLyrics, rememberLyrics } from "@/lib/client-cache";
+import { recordPlayStart, markListened } from "@/lib/local-library";
+import { shouldLogPlay } from "@/lib/library-core";
 
 type Status = "loading-tags" | "fetching-lyrics" | "ready" | "error";
 
@@ -62,6 +64,12 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
   const [audioSrc, setAudioSrc] = useState<string>(`/api/audio/${meta.id}`);
 
   const audioRef = useRef<HTMLAudioElement>(null);
+  const listenedRef = useRef(false);
+
+  // Reset listened flag when track changes
+  useEffect(() => {
+    listenedRef.current = false;
+  }, [meta.id]);
 
   const resetTimers = useCallback(() => {
     setSynced(null);
@@ -70,6 +78,35 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
     setIsInstrumental(false);
     setActiveIndex(-1);
   }, []);
+
+  // Record play start on audio play
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const handlePlay = () => {
+      recordPlayStart(meta.id, {
+        title: title || meta.title,
+        artist: artist || meta.artist,
+        duration: meta.duration,
+      }).catch(() => {});
+    };
+    audio.addEventListener("play", handlePlay);
+    return () => audio.removeEventListener("play", handlePlay);
+  }, [meta.id, meta.title, meta.artist, meta.duration, title, artist]);
+
+  // Mark listened once per track when >=10s
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const handleTimeUpdate = () => {
+      if (!listenedRef.current && shouldLogPlay(audio.currentTime)) {
+        listenedRef.current = true;
+        markListened(meta.id, audio.currentTime).catch(() => {});
+      }
+    };
+    audio.addEventListener("timeupdate", handleTimeUpdate);
+    return () => audio.removeEventListener("timeupdate", handleTimeUpdate);
+  }, [meta.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -270,8 +307,8 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
 
         {status !== "ready" && (
           <p className="saving-hint">
-            {status === "loading-tags" && "Parsing ID3 tags…"}
-            {status === "fetching-lyrics" && "Finding lyrics…"}
+            {status === "loading-tags" && "Warming up…"}
+            {status === "fetching-lyrics" && "Tuning the sound…"}
             {status === "error" && `Error: ${error}`}
           </p>
         )}
