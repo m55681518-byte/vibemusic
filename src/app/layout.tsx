@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./app.css";
 import { SwRegister } from "@/components/SwRegister";
 import { Logo } from "@/components/Logo";
+import { AmbientBackdrop } from "@/components/AmbientBackdrop";
 
 export const metadata: Metadata = {
   applicationName: "VibeMusic",
@@ -36,6 +38,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <a href="/#how">How it works</a>
           </nav>
         </header>
+        <AmbientBackdrop />
         {children}
         <footer className="foot">
           <p>VibeMusic · extract, tag, play, keep.</p>

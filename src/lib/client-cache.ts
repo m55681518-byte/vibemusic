@@ -13,11 +13,12 @@ function idbStore(name: string): KVStore | null {
   function getDb(): Promise<IDBDatabase> {
     if (!dbPromise) {
       dbPromise = new Promise<IDBDatabase>((resolve, reject) => {
-        const req = indexedDB.open(DB_NAME, 1);
+        const req = indexedDB.open(DB_NAME, 2);
         req.onupgradeneeded = () => {
           const db = req.result;
           if (!db.objectStoreNames.contains("audio")) db.createObjectStore("audio");
           if (!db.objectStoreNames.contains("lyrics")) db.createObjectStore("lyrics");
+          if (!db.objectStoreNames.contains("library")) db.createObjectStore("library");
         };
         req.onsuccess = () => resolve(req.result);
         req.onerror = () => reject(req.error);
