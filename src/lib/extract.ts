@@ -36,7 +36,7 @@ import {
   pruneStorage,
   type TrackMeta,
 } from "./store";
-import { cleanTrackMetadata } from "./lyrics";
+import { cleanTrackMetadata, stripArtistTitlePrefix } from "./lyrics";
 // PLACEHOLDER-title detection: TikTok registry labels ("Unknown - FullMix",
 // "original sound", "som original", "sound created by", empty titles)
 // are not real song names — audio identification must run for all of them.
@@ -93,6 +93,28 @@ export function resolveDisplayIdentity(t: string | undefined | null) {
 
 const COBALT_MAX_ATTEMPTS = 3;
 const COBALT_RETRY_BACKOFF_MS = 2000;
+
+/**
+ * Display-only clean for YouTube / YouTube-Music video titles. yt-dlp's
+ * `title` is the full VIDEO title ("Artist - Song (Official Video) (4K
+ * Remaster)"); strip the leading "{artist} - " prefix and trailing
+ * video-only decorations so the player shows the bare song name. Unlike
+ * cleanTrackMetadata (search-only), this never removes "(feat. …)" credits.
+ */
+function cleanVideoDisplayTitle(raw: string, artist: string): string {
+  const base = stripArtistTitlePrefix(artist, raw.trim());
+  return base
+    .replace(
+      /\s*\((?:official(?:\s+(?:music\s+)?video|audio|lyrics?)?|music\s+video|lyrics?|audio|edit|version|remaster(?:ed)?|hd|4k(?:\s+remaster)?)\)\s*$/i,
+      "",
+    )
+    .replace(
+      /\s+(?:official(?:\s+(?:music\s+)?video|audio|lyrics?)?|music\s+video|lyrics?|audio|edit|version|remaster(?:ed)?|hd|4k(?:\s+remaster)?)\s*$/i,
+      "",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 const TIKWM_API = "https://www.tikwm.com/api/";
 const TIKWM_QUERY_TIMEOUT_MS = 30_000;
@@ -523,7 +545,7 @@ async function tryYtdlpDirect(url: string, id: string, mp3Path: string): Promise
   const track: TrackMeta = {
     id,
     url,
-    title: info?.track || info?.title || "Unknown Track",
+    title: cleanVideoDisplayTitle(info?.track || info?.title || "Unknown Track", info?.artist || info?.uploader || info?.channel || "Unknown Artist"),
     artist: info?.artist || info?.uploader || info?.channel || "Unknown Artist",
     album: info?.album || undefined,
     duration: info?.duration && info.duration > 0 ? info.duration : probedDuration,
@@ -617,10 +639,11 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
       try {
         const info = await getMediaInfo(url);
         if (info) {
-          if (info.track || info.title) track.title = info.track || info.title || track.title;
-          if (info.artist || info.uploader || info.channel) {
-            track.artist = info.artist || info.uploader || info.channel || track.artist;
+          const newArtist = info.artist || info.uploader || info.channel || "";
+          if (info.track || info.title) {
+            track.title = cleanVideoDisplayTitle(info.track || info.title || track.title, newArtist || track.artist);
           }
+          if (newArtist) track.artist = newArtist;
           if (info.album) track.album = info.album;
           if (info.thumbnail) track.thumbnail = info.thumbnail;
           await saveMeta(track);
