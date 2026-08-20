@@ -5,30 +5,19 @@
  * through an external API. Requests rotate round-robin across the pool.
  */
 
-interface CobaltInstance {
-  baseUrl: string;
-  /**
-   * New cobalt API (v10+) instances accept `isAudioOnly` in the request body.
-   * The legacy instances (dog/cobaltapi.kittycat.boo) reject it with
-   * error.api.invalid_body — verified live 2026-08-16 — so they get the
-   * downloadMode/audioFormat/filenameStyle fields only.
-   */
-  supportsAudioOnly?: boolean;
-}
-
-const COBALT_INSTANCES: ReadonlyArray<CobaltInstance> = [
+const COBALT_INSTANCES: ReadonlyArray<{ baseUrl: string }> = [
+  { baseUrl: "https://fox.kittycat.boo" },
+  { baseUrl: "https://subito-c.meowing.de" },
+  { baseUrl: "https://cobalt-api.lamps-dev.dev" },
+  { baseUrl: "https://nuko-c.meowing.de" },
+  { baseUrl: "https://kitty.tame.gg" },
+  { baseUrl: "https://api.cobalt.rpkiinval.id" },
+  { baseUrl: "https://bergung-api.hoffnungfuerdiezukunft.net" },
+  // Turnstile-gated instances kept for redundancy; the pool round-robins
+  // and skips failures so these only add latency when actually blocked.
   { baseUrl: "https://dog.kittycat.boo" },
   { baseUrl: "https://cobaltapi.kittycat.boo" },
-  // Official instance (api.cobalt.tools). It answers HTTP but now requires a
-  // JWT/API key for direct API access, so it fails fast with a clear error
-  // code while the community instances above carry the load — it is kept so
-  // the redundancy list has a stable third, confirmed-reachable endpoint.
-  { baseUrl: "https://api.cobalt.tools", supportsAudioOnly: true },
-  // Live community instance running the new cobalt API (auth-gated like the
-  // official one: answers HTTP, fails fast with error.api.auth.key.missing
-  // when unkeyed). Verified reachable 2026-08-16; the previously suggested
-  // https://cobalt-api.kwiatekq.dev no longer resolves (NXDOMAIN).
-  { baseUrl: "https://cobalt.aelew.dev", supportsAudioOnly: true },
+  { baseUrl: "https://api.cobalt.tools" },
 ];
 
 // Round-robin cursor: each call starts from the next instance so load spreads
@@ -133,7 +122,6 @@ export async function getCobaltAudio(url: string): Promise<CobaltResult[]> {
         },
         body: JSON.stringify({
           url,
-          ...(instance.supportsAudioOnly ? { isAudioOnly: true } : {}),
           downloadMode: "audio",
           audioFormat: "mp3",
           filenameStyle: "basic",

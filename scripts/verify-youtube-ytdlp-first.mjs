@@ -95,18 +95,15 @@ check(
   "yt-dlp-first branch missing or ordered after cobalt",
 );
 
-// G5 — when BOTH routes fail, the surfaced error must carry BOTH chains
-// (cobalt last error AND the yt-dlp error) so the UI can show what happened.
+// G5 — when BOTH routes fail, the surfaced error must carry BOTH chains:
+// a combined message built from the yt-dlp error AND the upstream error
+// (cobalt or TikWM), e.g. `yt-dlp failed with: <msg>. Cobalt also failed: <msg>`.
 check(
   "G5 dual error chain surfaced on total failure",
-  /ytdlpErr|yt-dlp/i.test(extract) &&
-    extract.includes("All Cobalt instances failed") &&
-    (() => {
-      const err = extract.indexOf("throw");
-      const msg = extract.slice(err, err + 1200);
-      return /cobalt/i.test(msg) && /ytdlp|yt-dlp/i.test(msg);
-    })(),
-  "dual-chain markers missing",
+  /yt-dlp failed with: \$\{ytMsg\}/.test(extract) &&
+    /Cobalt also failed: \$\{coMsg\}/.test(extract) &&
+    /TikWM also failed: \$\{tkMsg\}/.test(extract),
+  "combined dual-chain error messages missing",
 );
 
 // G6 — body keys stay within the v11 schema (no legacy keys in the POST /).

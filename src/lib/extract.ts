@@ -12,7 +12,7 @@
  * "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5", then
  * fell back to cobalt. TikTok anti-bot served a Captcha to datacenter IPs
  * which yt-dlp read as "login required", and that failure also skipped the
- * cobalt fallback — hence this rewrite. yt-dlp survives only in src/lib/ytdlp.ts
+ * cobalt fallback — hence this rewrite. On failure both cobalt and yt-dlp errors throw
  * for the /api/lyrics auto-caption rung (downloadAutoCaptions) and for the
  * ffprobe-based probeAudioDuration integrity gate used below; extractAudioToFile
  * is no longer invoked anywhere on the extract path.
@@ -52,6 +52,15 @@ import {
   type MediaInfo,
 } from "./ytdlp";
 
+// Player-client variants for the audio download path (-x). Mirrored from
+// ytdlp.ts PLAYER_CLIENT_VARIANTS so the download retries across all clients
+// (default,-android_sdkless → tv → android_vr) on datacenter IPs.
+const PLAYER_CLIENT_VARIANTS: ReadonlyArray<readonly string[]> = [
+  ["--extractor-args", "youtube:player_client=default,-android_sdkless"],
+  ["--extractor-args", "youtube:player_client=tv"],
+  ["--extractor-args", "youtube:player_client=android_vr"],
+];
+
 // Self-contained generic TikTok title detector.
 // CRITICAL: all regex literals are inline — no module-scope refs —
 // because the acceptance gate VM-evals this function body alone.
@@ -89,6 +98,26 @@ export function resolveDisplayIdentity(t: string | undefined | null) {
   const stripped = val.replace(/#[\w-]+/g, "").replace(/@[\w.-]+/g, "").replace(/\|\|/g, "").replace(/[^\w]/g, "").trim();
   if (stripped.length === 0) return "TikTok Background Music";
   return val;
+}
+
+/**
+ * Returns true for YouTube-family URLs (youtube.com, music.youtube.com,
+ * youtu.be) so doExtract can route them to yt-dlp FIRST (more reliable on
+ * datacenter IPs with client failover) and only fall back to cobalt.
+ */
+export function isYouTubeFamilyUrl(url: string): boolean {
+  let host = "";
+  try {
+    host = new URL(url).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return false;
+  }
+  return (
+    host === "youtube.com" ||
+    host === "music.youtube.com" ||
+    host === "youtu.be" ||
+    host.endsWith(".youtube.com")
+  );
 }
 
 const COBALT_MAX_ATTEMPTS = 3;
@@ -176,6 +205,8 @@ async function writeTikTokTrack(url: string, id: string, mp3Path: string): Promi
   const res = await fetch(`${TIKWM_API}?url=${encodeURIComponent(url)}`, {
     signal: AbortSignal.timeout(TIKWM_QUERY_TIMEOUT_MS),
   });
+  // Dual-error surfacing: when both yt-dlp and cobalt fail, doExtract
+  // constructs a combined error — see the cobalt fallback chain below.
   if (!res.ok) throw new Error(`TikWM API failed: ${res.status}`);
 
   let body: TikwmResponse;
@@ -208,7 +239,7 @@ async function writeTikTokTrack(url: string, id: string, mp3Path: string): Promi
   const download = await fetch(audioUrl, { signal: AbortSignal.timeout(TIKWM_DOWNLOAD_TIMEOUT_MS) });
   if (!download.ok) throw new Error(`TikTok audio download failed: ${download.status}`);
   const buffer = Buffer.from(await download.arrayBuffer());
-  // Refuse empty bodies exactly like the cobalt path: never persist a 0-byte
+  // Refuse empty bodies exactly like the cobalt/yt-dlp path: never persist a 0-byte
   // mp3 + meta that /api/audio can never play.
   if (!buffer.length) throw new Error("TikWM audio yielded 0 bytes.");
   await fsp.writeFile(mp3Path, buffer);
@@ -514,19 +545,35 @@ async function tryYtdlpDirect(url: string, id: string, mp3Path: string): Promise
   await fsp.mkdir(dir, { recursive: true });
   const tmpDir = path.join(dir, ".tmp_" + id);
   await fsp.mkdir(tmpDir, { recursive: true });
-  const args = [
-    "--impersonate", "chrome",
-    "--no-playlist",
-    "--no-warnings",
-    "-x", "--audio-format", "mp3", "--audio-quality", "0",
-    "--output", path.join(tmpDir, "%(id)s.%(ext)s"),
-    url,
-  ];
-  try {
-    await extractAudioToFile(args);
-  } catch {
-    // yt-dlp binary or network failure — propagate so caller can handle
+
+  let lastError: unknown = null;
+  for (const clientArgs of PLAYER_CLIENT_VARIANTS) {
+    const args = [
+      "--impersonate", "chrome",
+      "--js-runtimes", "node",
+      "--downloader-args", "ffmpeg_i:-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+      "--no-playlist",
+      "--no-warnings",
+      "-x", "--audio-format", "mp3", "--audio-quality", "0",
+      "--output", path.join(tmpDir, "%(id)s.%(ext)s"),
+      ...clientArgs,
+      url,
+    ];
+    try {
+      await extractAudioToFile(args);
+      // Success — break out of the failover loop
+      lastError = null;
+      break;
+    } catch (err) {
+      lastError = err;
+      console.warn(
+        "[ytdlp] tryYtdlpDirect failed with player client, trying next:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
+  if (lastError) throw lastError instanceof Error ? lastError : new Error(String(lastError));
+
   const files = await fsp.readdir(tmpDir).catch(() => [] as string[]);
   const mp3File = files.find(f => f.endsWith(".mp3"));
   if (!mp3File) throw new Error("yt-dlp produced no MP3");
@@ -613,22 +660,71 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
     }
   }
 
-  // TikTok shortlinks take the TikWM fast-track; every other URL goes straight
-  // to the cobalt pool (retry loop + backoff below). If both fail (e.g. anti-bot
-  // or promo page), fall back to local yt-dlp which can often access the stream
-  // where Cobalt/TikWM are blocked.
+  // Routing: TikTok shortlinks take the TikWM fast-track. YouTube-family
+  // URLs (youtube.com / music.youtube.com / youtu.be) try local yt-dlp FIRST
+  // (with client failover across default,tv,android_vr) since it is more
+  // reliable on datacenter IPs; only if ALL player-client variants fail do we
+  // fall back to cobalt. Non-YouTube non-TikTok URLs keep the original order:
+  // cobalt first, yt-dlp as last resort.
   let track: TrackMeta;
-  try {
-    track = isTikTokUrl(url)
-      ? await writeTikTokTrack(url, id, mp3Path)
-      : await tryCobaltFallback(url, id, mp3Path);
-  } catch (firstErr) {
-    // Fallback: local yt-dlp direct extraction (works where external APIs are blocked)
+  if (isTikTokUrl(url)) {
+    // TikTok: try TikWM first, fall back to local yt-dlp
+    let tikwmErr: unknown = null;
+    let ytDlpErr: unknown = null;
+    try {
+      track = await writeTikTokTrack(url, id, mp3Path);
+    } catch (err) {
+      tikwmErr = err;
+      try {
+        track = await tryYtdlpDirect(url, id, mp3Path);
+      } catch (err2) {
+        ytDlpErr = err2;
+        const ytMsg = ytDlpErr instanceof Error ? ytDlpErr.message : String(ytDlpErr);
+        const tkMsg = tikwmErr instanceof Error ? tikwmErr.message : String(tikwmErr);
+        throw new Error(`yt-dlp failed with: ${ytMsg}. TikWM also failed: ${tkMsg}`);
+      }
+    }
+  } else if (isYouTubeFamilyUrl(url)) {
+    let ytDlpErr: unknown = null;
+    let cobaltErr: unknown = null;
+    // Try yt-dlp first (with client failover)
     try {
       track = await tryYtdlpDirect(url, id, mp3Path);
-    } catch (ytdlpErr) {
-      // If yt-dlp also fails (missing binary / total blockage), throw the original
-      throw firstErr;
+    } catch (err) {
+      ytDlpErr = err;
+      console.warn(
+        "[extract] yt-dlp failed for YouTube URL, trying cobalt fallback:",
+        err instanceof Error ? err.message : String(err),
+      );
+      // Fall back to cobalt
+      try {
+        track = await tryCobaltFallback(url, id, mp3Path);
+      } catch (err2) {
+        cobaltErr = err2;
+        // Both failed — surface both error chains
+        const ytMsg = ytDlpErr instanceof Error ? ytDlpErr.message : String(ytDlpErr);
+        const coMsg = cobaltErr instanceof Error ? cobaltErr.message : String(cobaltErr);
+        throw new Error(`yt-dlp failed with: ${ytMsg}. Cobalt also failed: ${coMsg}`);
+      }
+    }
+  } else {
+    let cobaltErr: unknown = null;
+    let ytDlpErr: unknown = null;
+    // Cobalt first for non-YouTube, non-TikTok URLs
+    try {
+      track = await tryCobaltFallback(url, id, mp3Path);
+    } catch (err) {
+      cobaltErr = err;
+      // Fall back to yt-dlp
+      try {
+        track = await tryYtdlpDirect(url, id, mp3Path);
+      } catch (err2) {
+        ytDlpErr = err2;
+        // Both failed — surface both error chains
+        const ytMsg = ytDlpErr instanceof Error ? ytDlpErr.message : String(ytDlpErr);
+        const coMsg = cobaltErr instanceof Error ? cobaltErr.message : String(cobaltErr);
+        throw new Error(`yt-dlp failed with: ${ytMsg}. Cobalt also failed: ${coMsg}`);
+      }
     }
   }
 
