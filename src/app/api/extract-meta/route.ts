@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import crypto from "crypto";
 
 export async function POST(request: Request) {
   try {
@@ -15,7 +16,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Invalid URL" }, { status: 400 });
     }
 
-    const id = require("crypto").createHash("sha256").update(url).digest("hex").slice(0, 32);
+    const id = crypto.createHash("sha256").update(url).digest("hex").slice(0, 32);
 
     let title = "Loading…";
     let artist = "Unknown artist";
