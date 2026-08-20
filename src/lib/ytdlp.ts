@@ -98,9 +98,10 @@ export interface MediaInfo {
  * a login"); the tv client (the YouTube-on-TV embedded player) is generally
  * NOT blocked on server IPs, so it is the failover before any cobalt fallback.
  */
-const PLAYER_CLIENT_VARIANTS: ReadonlyArray<readonly string[]> = [
+export const PLAYER_CLIENT_VARIANTS: ReadonlyArray<readonly string[]> = [
   ["--extractor-args", "youtube:player_client=default,-android_sdkless"],
   ["--extractor-args", "youtube:player_client=tv"],
+  ["--extractor-args", "youtube:player_client=android_vr"],
 ];
 
 export async function getMediaInfo(url: string): Promise<MediaInfo> {
