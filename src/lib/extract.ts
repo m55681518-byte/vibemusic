@@ -186,11 +186,11 @@ async function writeTikTokTrack(url: string, id: string, mp3Path: string): Promi
     throw new Error("TikWM audio is not playable (ffprobe verification failed).");
   }
 
-  // Metadata priority: the background track's real metadata (data.music_info)
-  // wins over the video caption (data.title, full of hashtags) and the video
-  // creator's profile (data.author). Feeding the caption as the track title
-  // breaks Tier 1/2 lyrics search, which would query LRCLIB/Genius with
-  // hashtag text instead of the actual track name.
+  // The background track's real metadata (data.music_info) is authoritative for
+  // the SONG identity. The video caption (data.title) is the creator's post
+  // description — never adopt it as the track title when a named sound exists,
+  // otherwise the app shows "Follow Everyone and Joined Messi…" instead of the
+  // actual background music and breaks lyrics search with hashtag text.
   let title = data.music_info?.title?.trim() || data.title?.trim() || "Untitled";
   let artist =
     data.music_info?.author?.trim() ||
@@ -198,51 +198,38 @@ async function writeTikTokTrack(url: string, id: string, mp3Path: string): Promi
     data.author?.unique_id?.trim() ||
     "Unknown artist";
 
-  // "Original sound" clean fallback: TikTok names creator-made audio with a
-  // generic placeholder ("original sound - <user>", "som original - <user>",
-  // "…sound created by…", "Unknown - FullMix", bare "Unknown") that carries
-  // no real song info. Drop the placeholder, combine the remainder with the
-  // video caption, and let cleanTrackMetadata strip hashtags/@handles (and any
-  // "{artist} - " prefix) so a real "Artist - Song" pair can surface; adopt
-  // the cleaned values only when they yield a distinct, non-generic title.
+  // Only salvage a real "Artist - Song" pair from the caption when there is NO
+  // named sound at all (raw video audio). A bare description must never
+  // masquerade as the track title.
   const genericOriginalTitle = GENERIC_MUSIC_TITLE.test(title);
-  if (genericOriginalTitle && data.title) {
-    const stripped = title.replace(/^(?:original sound|som original)\s*-\s*[^\s]+/, "").trim();
-    const cleaned = cleanTrackMetadata(artist, `${stripped} ${data.title}`.trim());
-    if (
-      cleaned.title &&
-      cleaned.title !== title.trim() &&
-      !GENERIC_MUSIC_TITLE.test(cleaned.title)
-    ) {
+  if (!data.music_info && data.title && /^\s*[^-\n]{2,40}\s*-\s*.{2,}/.test(data.title)) {
+    const cleaned = cleanTrackMetadata(artist, data.title.trim());
+    if (cleaned.title && !GENERIC_MUSIC_TITLE.test(cleaned.title)) {
       title = cleaned.title;
       if (cleaned.artist && cleaned.artist !== "Unknown artist") artist = cleaned.artist;
     }
   }
 
-  // PLACEHOLDER detection: generic title OR missing music_info object.
-  // When TikWM returns no music_info at all, the audio is raw video audio
-  // (voiceovers, ambient noise) — identification must still be attempted.
+  // Identification: any track whose title is a registry placeholder (incl.
+  // "original sound - <user>") or whose sound is unnamed gets audio-based
+  // identification (Whisper transcript -> Genius lyric search). A confident hit
+  // overrides the placeholder and swaps in clean official audio.
   const unidentified = !data.music_info || isGenericTikTokTitle(title);
 
-  // PLACEHOLDER audio identification: for ALL unidentified tracks, attempt
-  // to name the REAL track from the audio itself: zero-key Whisper
-  // transcription → Genius lyric-text search. A confident hit
-  // (matchedWords >= 5) overrides title/artist AND fetches the clean
-  // official audio to replace the noisy TikTok video audio on disk.
-  // Extraction is never blocked — identifyTrackFromAudio never throws.
+  let identifiedSong = false;
   let cleanSwap: { duration: number; sizeBytes: number; thumbnail: string | undefined } | null = null;
   if (unidentified && mp3Path) {
-    const identified = await identifyTrackFromAudio(mp3Path);
-    if (identified && identified.matchedWords >= 5) {
-      title = identified.title;
-      artist = identified.artist;
+    const hit = await identifyTrackFromAudio(mp3Path);
+    if (hit && hit.matchedWords >= 5) {
+      title = hit.title;
+      artist = hit.artist;
+      identifiedSong = true;
 
       // Fetch clean official audio and REPLACE the noisy TikTok video audio.
       const stagingPath = mp3Path + '.clean.tmp';
       try {
         const clean = await fetchIdentifiedAudio(title, artist, stagingPath);
         if (clean) {
-          // Replace the persisted mp3 with the clean official audio
           try {
             await fsp.rename(stagingPath, mp3Path);
           } catch {
@@ -251,17 +238,20 @@ async function writeTikTokTrack(url: string, id: string, mp3Path: string): Promi
           }
           cleanSwap = clean;
         } else {
-          // Clean fetch failed — remove staging file, keep original TikTok audio
           await fsp.unlink(stagingPath).catch(() => undefined);
         }
       } catch {
-        // Swap failure: clean up staging file, keep original TikTok audio
         await fsp.unlink(stagingPath).catch(() => undefined);
       }
     }
   }
   // Safety net: never serve a raw placeholder as the display title.
   title = resolveDisplayIdentity(title);
+
+  // A track is "identified" when it carries a real, non-placeholder named sound
+  // OR audio identification resolved a concrete song. This gates cache healing
+  // so legacy caption-mislabeled tracks get re-resolved.
+  const identified = identifiedSong || (!genericOriginalTitle && !!data.music_info);
 
   const track: TrackMeta = {
     id,
@@ -276,6 +266,7 @@ async function writeTikTokTrack(url: string, id: string, mp3Path: string): Promi
     mp3Path,
     sizeBytes: cleanSwap?.sizeBytes ?? buffer.length,
     createdAt: Date.now(),
+    identified,
   };
   await saveMeta(track);
   return track;
@@ -449,11 +440,20 @@ export async function getTrackInfo(rawUrl: string): Promise<ExtractResult> {
     // re-extract so the real audio replaces it.
     const stat = await fsp.stat(existing.mp3Path).catch(() => null);
     if (stat && stat.size > 0 && existing.sizeBytes > 0) {
-      // Cache healing: if the stored title is still a registry placeholder
-      // (e.g. "Unknown - FullMix", "original sound - user"), do NOT serve it
-      // forever — re-extract so audio identification can resolve the real song.
-      if (!GENERIC_MUSIC_TITLE.test(existing.title) && (existing.title || "").trim()) {
-        return { track: existing, cached: true };
+      // Re-resolve legacy TikTok tracks cached before the background-music fix:
+      // they carry no `identified` flag and may hold a video description instead
+      // of the real song. identified=false (tried, nothing found) is served
+      // as-is ("TikTok Background Music") so we don't re-run identification on
+      // every request.
+      const needsReid = existing.extractor === "tikwm" && existing.identified === undefined;
+      if (!needsReid) {
+        if (
+          existing.identified === false ||
+          existing.identified === true ||
+          (!GENERIC_MUSIC_TITLE.test(existing.title) && (existing.title || "").trim())
+        ) {
+          return { track: existing, cached: true };
+        }
       }
     }
     await fsp.unlink(existing.mp3Path).catch(() => undefined);
@@ -554,11 +554,12 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
         // Enrich meta with scraped title/artist and smart thumbnail
         const enriched: TrackMeta = {
           ...track,
-          title: smart.title || track.title,
-          artist: smart.artist || track.artist,
+          title: track.title || smart.title,
+          artist: track.artist || smart.artist,
           thumbnail: smart.thumbnail || track.thumbnail,
           url: smart.officialUrl,
           webpageUrl: smart.officialUrl,
+          identified: true,
         };
         await saveMeta(enriched);
         return { track: enriched, cached: false };

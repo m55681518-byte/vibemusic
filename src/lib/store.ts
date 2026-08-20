@@ -15,6 +15,11 @@ export interface TrackMeta {
   mp3Path: string;
   sizeBytes: number;
   createdAt: number;
+  /** True once the track's real song identity is confirmed (named sound or
+   * audio-identified). Absent/undefined marks a legacy cached track that was
+   * extracted before background-music/caption handling was fixed and must be
+   * re-resolved. */
+  identified?: boolean;
 }
 
 const VALID_ID = /^[a-z0-9_-]{1,64}$/i;
