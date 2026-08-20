@@ -19,7 +19,6 @@
  */
 import path from "node:path";
 import { promises as fsp } from "node:fs";
-import { probeAudioDuration } from "./ytdlp";
 import {
   getCobaltAudio,
   deriveThumbnailUrl,

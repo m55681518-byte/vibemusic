@@ -53,6 +53,7 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
   const [error, setError] = useState("");
   const [coverDataUrl, setCoverDataUrl] = useState<string | null>(null);
   const [fallbackThumb, setFallbackThumb] = useState<string | null>(meta.thumbnail ?? null);
+  const coverSrc = coverDataUrl || fallbackThumb;
   const [title, setTitle] = useState(meta.title);
   const [artist, setArtist] = useState(meta.artist);
   const [synced, setSynced] = useState<{ time: number; text: string }[] | null>(null);
@@ -61,6 +62,7 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
   const [isInstrumental, setIsInstrumental] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [lyricsExpanded, setLyricsExpanded] = useState(false);
+  const [shuffle, setShuffle] = useState(false);
 
   const [audioSrc, setAudioSrc] = useState<string>(`/api/audio/${meta.id}`);
 
@@ -282,7 +284,6 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
   }, [meta.id, title, artist, coverSrc]);
 
 
-  const coverSrc = coverDataUrl || fallbackThumb;
   const fileName = `${sanitizeFilename(title)}.mp3`;
 
   return (
@@ -337,8 +338,8 @@ export function PlayerView({ meta }: { meta: TrackMeta }) {
 
         {/* Playback Controls: Shuffle, Loop, Speed */}
         <div className="cp-controls" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 12, margin: "8px 0" }}>
-          <button onClick={() => { const a = audioRef.current; if (a) a.shuffle = !a.shuffle; }} aria-label="Shuffle" title="Shuffle" style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)", color: "#fff", borderRadius: 99, padding: "8px 14px", cursor: "pointer", fontSize: 13 }}>🔀 Shuffle</button>
-          <button onClick={() => { const a = audioRef.current; if (a) { a.loop = a.loop === false ? true : a.loop === true ? "one" : false; } }} aria-label="Loop" title="Loop" style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)", color: "#fff", borderRadius: 99, padding: "8px 14px", cursor: "pointer", fontSize: 13 }}>♻ Loop</button>
+          <button onClick={() => setShuffle((s) => !s)} aria-label="Shuffle" title="Shuffle" style={{ background: shuffle ? "rgba(120,180,255,0.25)" : "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)", color: "#fff", borderRadius: 99, padding: "8px 14px", cursor: "pointer", fontSize: 13 }}>🔀 Shuffle</button>
+          <button onClick={() => { const a = audioRef.current; if (a) a.loop = !a.loop; }} aria-label="Loop" title="Loop" style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)", color: "#fff", borderRadius: 99, padding: "8px 14px", cursor: "pointer", fontSize: 13 }}>♻ Loop</button>
           <button onClick={() => { const a = audioRef.current; if (a) { const s = [0.75,1,1.25,1.5]; const i = s.indexOf(a.playbackRate||1); a.playbackRate = s[(i+1)%s.length]; } }} aria-label="Playback speed" title="Playback speed" style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)", color: "#fff", borderRadius: 99, padding: "8px 14px", cursor: "pointer", fontSize: 13 }}>⏱ Speed</button>
           <button onClick={() => { const a = audioRef.current; if (a) { const mins = [10, 20, 30, 60]; const choice = prompt("Sleep timer (minutes): 10 / 20 / 30 / 60"); if (choice) { const m = parseInt(choice); if ([10,20,30,60].includes(m)) setTimeout(() => a.pause(), m * 60000); } } }} aria-label="Sleep timer" title="Sleep timer" style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)", color: "#fff", borderRadius: 99, padding: "8px 14px", cursor: "pointer", fontSize: 13 }}>⏲ Sleep</button>
 
