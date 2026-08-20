@@ -44,7 +44,13 @@ import { identifyTrackFromAudio } from "./identify";
 import { fetchIdentifiedAudio } from "./clean-audio";
 import { resolveSmartTrack } from "./smart-resolve";
 import { searchItunes, getPristineArtUrl } from "./itunes";
-import { ytdlpBinaryPath, extractAudioToFile, probeAudioDuration } from "./ytdlp";
+import {
+  ytdlpBinaryPath,
+  extractAudioToFile,
+  probeAudioDuration,
+  getMediaInfo,
+  type MediaInfo,
+} from "./ytdlp";
 
 // Self-contained generic TikTok title detector.
 // CRITICAL: all regex literals are inline — no module-scope refs —
@@ -506,31 +512,39 @@ async function tryYtdlpDirect(url: string, id: string, mp3Path: string): Promise
     await fsp.unlink(mp3Path).catch(() => undefined);
     throw new Error("yt-dlp audio not playable");
   }
-  // Try to identify title/artist from URL or metadata
-  const videoId = mp3File.replace(/\.mp3$/i, "");
-  const meta = await loadMeta(id);
+  // yt-dlp can report the video's real title/artist/album/thumbnail — cobalt's
+  // filename parsing and this fallback otherwise leave "Unknown Track/Artist".
+  let info: MediaInfo | null = null;
+  try {
+    info = await getMediaInfo(url);
+  } catch {
+    // Metadata is best-effort; the audio is already on disk.
+  }
   const track: TrackMeta = {
     id,
     url,
-    title: meta?.title || "Unknown Track",
-    artist: meta?.artist || "Unknown Artist",
-    album: undefined,
-    duration: probedDuration,
-    thumbnail: meta?.thumbnail || undefined,
+    title: info?.track || info?.title || "Unknown Track",
+    artist: info?.artist || info?.uploader || info?.channel || "Unknown Artist",
+    album: info?.album || undefined,
+    duration: info?.duration && info.duration > 0 ? info.duration : probedDuration,
+    thumbnail: info?.thumbnail || undefined,
     webpageUrl: url,
     extractor: "yt-dlp",
     mp3Path,
     sizeBytes: (await fsp.stat(mp3Path).catch(() => ({ size: 0 }))).size,
     createdAt: Date.now(),
   };
-  // Smart metadata / artwork enrichment
-  try {
-    const itunesRes = await searchItunes((track.title || "") + " " + (track.artist || ""));
-    if (itunesRes) {
-      const art = getPristineArtUrl(itunesRes);
-      if (art) track.thumbnail = art;
-    }
-  } catch {}
+  // Smart metadata / artwork enrichment (only with a real title — searching
+  // iTunes with "Unknown Track Unknown Artist" yields a random artwork).
+  if (track.title !== "Unknown Track") {
+    try {
+      const itunesRes = await searchItunes(`${track.title} ${track.artist}`);
+      if (itunesRes) {
+        const art = getPristineArtUrl(itunesRes);
+        if (art) track.thumbnail = art;
+      }
+    } catch {}
+  }
   await saveMeta(track);
   return track;
 }
@@ -585,6 +599,35 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
     } catch (ytdlpErr) {
       // If yt-dlp also fails (missing binary / total blockage), throw the original
       throw firstErr;
+    }
+  }
+
+  // Metadata guard: cobalt's filename-derived title/artist can be "Unknown"
+  // (e.g. a tunnel filename with no " - " split). yt-dlp --dump-json has the
+  // authoritative title/artist for YouTube / YouTube-Music links — enrich only
+  // when the stored metadata is missing or generic, so the common paths that
+  // already carry correct metadata stay fast.
+  if (track.extractor !== "tikwm") {
+    const unknownTitle =
+      !track.title ||
+      track.title === "Unknown Track" ||
+      /^unknown(?: track)?$/i.test(track.title);
+    const unknownArtist = !track.artist || /^unknown artist$/i.test(track.artist);
+    if (unknownTitle || unknownArtist) {
+      try {
+        const info = await getMediaInfo(url);
+        if (info) {
+          if (info.track || info.title) track.title = info.track || info.title || track.title;
+          if (info.artist || info.uploader || info.channel) {
+            track.artist = info.artist || info.uploader || info.channel || track.artist;
+          }
+          if (info.album) track.album = info.album;
+          if (info.thumbnail) track.thumbnail = info.thumbnail;
+          await saveMeta(track);
+        }
+      } catch {
+        // Enrichment is best-effort; the track already plays.
+      }
     }
   }
 
