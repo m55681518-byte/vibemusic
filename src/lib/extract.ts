@@ -102,18 +102,26 @@ const COBALT_RETRY_BACKOFF_MS = 2000;
  * cleanTrackMetadata (search-only), this never removes "(feat. …)" credits.
  */
 function cleanVideoDisplayTitle(raw: string, artist: string): string {
-  const base = stripArtistTitlePrefix(artist, raw.trim());
-  return base
-    .replace(
-      /\s*\((?:official(?:\s+(?:music\s+)?video|audio|lyrics?)?|music\s+video|lyrics?|audio|edit|version|remaster(?:ed)?|hd|4k(?:\s+remaster)?)\)\s*$/i,
-      "",
-    )
-    .replace(
-      /\s+(?:official(?:\s+(?:music\s+)?video|audio|lyrics?)?|music\s+video|lyrics?|audio|edit|version|remaster(?:ed)?|hd|4k(?:\s+remaster)?)\s*$/i,
-      "",
-    )
-    .replace(/\s+/g, " ")
-    .trim();
+  // Re-apply the trailing-decorator strips a bounded number of times: YouTube
+  // video titles can carry several decorations at the end ("Song (Official
+  // Video) (4K Remaster)") and a single anchored pass only removes the last.
+  let cleaned = stripArtistTitlePrefix(artist, raw.trim());
+  for (let i = 0; i < 4; i++) {
+    const next = cleaned
+      .replace(
+        /\s*\((?:official(?:\s+(?:music\s+)?video|audio|lyrics?)?|music\s+video|lyrics?|audio|edit|version|remaster(?:ed)?|hd|4k(?:\s+remaster)?)\)\s*$/i,
+        " ",
+      )
+      .replace(
+        /\s+(?:official(?:\s+(?:music\s+)?video|audio|lyrics?)?|music\s+video|lyrics?|audio|edit|version|remaster(?:ed)?|hd|4k(?:\s+remaster)?)\s*$/gi,
+        "",
+      )
+      .replace(/\s+/g, " ")
+      .trim();
+    if (next === cleaned) break;
+    cleaned = next;
+  }
+  return cleaned;
 }
 
 const TIKWM_API = "https://www.tikwm.com/api/";
