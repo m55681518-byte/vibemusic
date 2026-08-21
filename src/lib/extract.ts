@@ -44,6 +44,7 @@ import { identifyTrackFromAudio } from "./identify";
 import { fetchIdentifiedAudio } from "./clean-audio";
 import { resolveSmartTrack } from "./smart-resolve";
 import { searchItunes, getPristineArtUrl } from "./itunes";
+import { getPipedStreams } from "./piped";
 import {
   ytdlpBinaryPath,
   extractAudioToFile,
@@ -455,6 +456,112 @@ async function tryCobaltFallback(
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
+/**
+ * DECENTRALIZED RELAYER — Piped pool. The server never touches YouTube
+ * directly: a public Piped instance returns the stream manifest and serves
+ * the audio through its own proxy; we download THOSE bytes, ffprobe-verify
+ * them, and store. Metadata (title/uploader/duration) comes from the same
+ * manifest, with the public oEmbed endpoint as a lightweight top-up.
+ */
+async function writePipedTrack(
+  url: string,
+  id: string,
+  mp3Path: string,
+): Promise<TrackMeta> {
+  const piped = await getPipedStreams(url);
+  const referer = "https://www.youtube.com/";
+  const response = await fetch(piped.audioUrl, {
+    headers: {
+      "User-Agent": BROWSER_USER_AGENT,
+      Referer: referer,
+      Accept: "audio/*,*/*;q=0.9",
+    },
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!response.ok) throw new Error(`Piped audio download failed: ${response.status}`);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!buffer.length) throw new Error("Piped audio yielded 0 bytes");
+  await fsp.writeFile(mp3Path, buffer);
+  const probedDuration = await probeAudioDuration(mp3Path);
+  if (probedDuration === null) {
+    await fsp.unlink(mp3Path).catch(() => undefined);
+    throw new Error("Piped audio is not playable (ffprobe verification failed)");
+  }
+
+  // Metadata: manifest first, oEmbed top-up, iTunes art enrichment.
+  let title = piped.title || "";
+  let artist = piped.artist || "";
+  if (!title || !artist) {
+    const oembed = await youtubeOEmbedTitle(url);
+    title = title || oembed?.title || "";
+    artist = artist || oembed?.author || "";
+  }
+  if (!title) throw new Error("Piped returned no usable metadata");
+
+  const track: TrackMeta = {
+    id,
+    url,
+    title: cleanVideoDisplayTitle(title, artist || "Unknown Artist"),
+    artist: artist || "Unknown Artist",
+    album: undefined,
+    duration:
+      piped.durationSeconds && piped.durationSeconds > 0 ? piped.durationSeconds : probedDuration,
+    thumbnail: deriveThumbnailUrl(url),
+    webpageUrl: url,
+    extractor: "piped",
+    mp3Path,
+    sizeBytes: buffer.length,
+    createdAt: Date.now(),
+  };
+  if (track.title !== "Unknown Track") {
+    try {
+      const itunesRes = await searchItunes(`${track.title} ${track.artist}`);
+      if (itunesRes) {
+        const art = getPristineArtUrl(itunesRes);
+        if (art) track.thumbnail = art;
+      }
+    } catch {}
+  }
+  await saveMeta(track);
+  return track;
+}
+
+async function tryPipedFallback(
+  url: string,
+  id: string,
+  mp3Path: string,
+): Promise<TrackMeta> {
+  return writePipedTrack(url, id, mp3Path);
+}
+
+export interface OEmbedMeta {
+  title: string;
+  author: string;
+}
+
+/**
+ * Lightweight public metadata: YouTube's oEmbed endpoint returns JSON with
+ * title + author_name for any video/short URL — no page scraping, no bot
+ * wall, ~100ms. Used to top up titles when relayers return thin metadata.
+ */
+export async function youtubeOEmbedTitle(url: string): Promise<OEmbedMeta | null> {
+  try {
+    const endpoint = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+    const res = await fetch(endpoint, {
+      headers: { Accept: "application/json", "User-Agent": BROWSER_USER_AGENT },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) return null;
+    const body = (await res.json().catch(() => null)) as
+      | { title?: string; author_name?: string }
+      | null;
+    if (!body?.title) return null;
+    return { title: body.title.trim(), author: (body.author_name || "").trim() };
+  } catch {
+    return null;
+  }
+}
+
 const singleFlight = new Map<string, Promise<ExtractResult>>();
 
 export interface ExtractResult {
@@ -667,11 +774,9 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
   }
 
   // Routing: TikTok shortlinks take the TikWM fast-track. YouTube-family
-  // URLs (youtube.com / music.youtube.com / youtu.be) try local yt-dlp FIRST
-  // (with client failover across default,tv,android_vr) since it is more
-  // reliable on datacenter IPs; only if ALL player-client variants fail do we
-  // fall back to cobalt. Non-YouTube non-TikTok URLs keep the original order:
-  // cobalt first, yt-dlp as last resort.
+  // URLs go through the DECENTRALIZED RELAYER order — Piped pool first,
+  // then the cobalt pool; host-side yt-dlp is only the last-resort backstop.
+  // Non-YouTube non-TikTok URLs keep cobalt-first with yt-dlp as backstop.
   let track: TrackMeta;
   if (isTikTokUrl(url)) {
     // TikTok: try TikWM first, fall back to local yt-dlp
@@ -691,26 +796,38 @@ async function doExtract(url: string, id: string): Promise<ExtractResult> {
       }
     }
   } else if (isYouTubeFamilyUrl(url)) {
-    let ytDlpErr: unknown = null;
+    // DECENTRALIZED RELAYER ORDER: external APIs first (Piped pool, then the
+    // cobalt pool); host-side yt-dlp is the LAST-RESORT backstop only.
+    let pipedErr: unknown = null;
     let cobaltErr: unknown = null;
-    // Try yt-dlp first (with client failover)
+    let ytDlpErr: unknown = null;
     try {
-      track = await tryYtdlpDirect(url, id, mp3Path);
+      track = await tryPipedFallback(url, id, mp3Path);
     } catch (err) {
-      ytDlpErr = err;
+      pipedErr = err;
       console.warn(
-        "[extract] yt-dlp failed for YouTube URL, trying cobalt fallback:",
+        "[extract] Piped pool failed for YouTube URL, trying cobalt fallback:",
         err instanceof Error ? err.message : String(err),
       );
-      // Fall back to cobalt
       try {
         track = await tryCobaltFallback(url, id, mp3Path);
       } catch (err2) {
         cobaltErr = err2;
-        // Both failed — surface both error chains
-        const ytMsg = ytDlpErr instanceof Error ? ytDlpErr.message : String(ytDlpErr);
-        const coMsg = cobaltErr instanceof Error ? cobaltErr.message : String(cobaltErr);
-        throw new Error(`yt-dlp failed with: ${ytMsg}. Cobalt also failed: ${coMsg}`);
+        console.warn(
+          "[extract] cobalt pool failed for YouTube URL, yt-dlp last resort:",
+          err2 instanceof Error ? err2.message : String(err2),
+        );
+        try {
+          track = await tryYtdlpDirect(url, id, mp3Path);
+        } catch (err3) {
+          ytDlpErr = err3;
+          const pMsg = pipedErr instanceof Error ? pipedErr.message : String(pipedErr);
+          const cMsg = cobaltErr instanceof Error ? cobaltErr.message : String(cobaltErr);
+          const yMsg = ytDlpErr instanceof Error ? ytDlpErr.message : String(ytDlpErr);
+          throw new Error(
+            `yt-dlp failed with: ${yMsg}. Cobalt also failed: ${cMsg}. Piped also failed: ${pMsg}`,
+          );
+        }
       }
     }
   } else {

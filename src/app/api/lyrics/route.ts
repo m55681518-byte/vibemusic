@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { lookupLyrics } from "@/lib/lyrics";
-import { whisperTranscribe } from "@/lib/whisper";
-import { loadMeta, mp3PathFor, fileExists } from "@/lib/store";
+import { loadMeta, mp3PathFor } from "@/lib/store";
 import { probeAudioDuration } from "@/lib/ytdlp";
 
 export const runtime = "nodejs";
@@ -10,10 +9,8 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
   const artist = req.nextUrl.searchParams.get("artist") || "";
   const title = req.nextUrl.searchParams.get("title") || "";
-  // Optional track id so the route can locate stored auto-caption (.srt)
-  // files when LRCLIB and the text provider both miss, can resolve the
-  // source video URL for the on-demand caption fallback, and can hand the
-  // stored MP3 to the Whisper speech-to-text tier as a last resort.
+  // Optional track id so the route can resolve the actual duration for
+  // LRCLIB timestamp rescaling.
   const id = req.nextUrl.searchParams.get("id") || undefined;
   const meta = id ? await loadMeta(id) : null;
 
@@ -27,10 +24,10 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Pass the RAW user artist/title so LRCLIB ranking can recognize edition
-  // tags like "(Slowed)"/"(Sped Up)" (lookupLyrics cleans internally for the
-  // search key). The source video URL (webpageUrl, else the raw input URL)
-  // feeds the on-demand caption fallback.
+  // LYRICS PIPELINE (decentralized): LRCLIB is the source. Pass the RAW user
+  // artist/title so LRCLIB ranking can recognize edition tags like
+  // "(Slowed)"/"(Sped Up)" (lookupLyrics cleans internally for the search
+  // key). No Whisper, no caption scraping.
   const result = await lookupLyrics(
     artist,
     title,
@@ -38,33 +35,6 @@ export async function GET(req: NextRequest) {
     meta?.webpageUrl ?? meta?.url,
     actualDurationSec ?? undefined,
   );
-
-  if (result.synced || result.plain || result.isInstrumental) {
-    return NextResponse.json(result, {
-      headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" },
-    });
-  }
-
-  // Tier 2/3 — Whisper speech-to-text fallback: only possible with an id so
-  // we can read the stored MP3. Runs zero-key against public Hugging Face
-  // Gradio spaces (with the optional keyed Groq path as a last resort) and
-  // quietly no-ops on any failure.
-  if (id) {
-    const mp3Path = mp3PathFor(id);
-    if (await fileExists(mp3Path)) {
-      const whisper = await whisperTranscribe(mp3Path);
-      if (whisper?.isInstrumental) {
-        return NextResponse.json({ synced: null, plain: null, isInstrumental: true }, {
-          headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" },
-        });
-      }
-      if (whisper?.synced || whisper?.plain) {
-        return NextResponse.json({ synced: whisper.synced, plain: whisper.plain }, {
-          headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" },
-        });
-      }
-    }
-  }
 
   return NextResponse.json(result, {
     headers: { "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400" },

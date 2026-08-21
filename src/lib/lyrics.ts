@@ -1,7 +1,6 @@
-import { promises as fsp } from "node:fs";
+﻿import { promises as fsp } from "node:fs";
 import path from "node:path";
 import { storageDir, isValidId } from "./store";
-import { downloadAutoCaptions } from "./ytdlp";
 
 const BASE = (process.env.LRCLIB_BASE_URL || "https://lrclib.net/api").replace(/\/$/, "");
 const GENIUS_SEARCH = "https://genius.com/api/search/song";
@@ -34,7 +33,7 @@ const SRT_TIMECODE =
 export function parseSrt(srt: string): SrtLine[] {
   const captions: SrtLine[] = [];
   for (const block of srt.replace(/\r/g, "").split(/\n{2,}/)) {
-    // SRT blocks are: <index>\n<start> --> <end>\n<text lines> — locate the
+    // SRT blocks are: <index>\n<start> --> <end>\n<text lines> â€” locate the
     // timecode line rather than assuming it is the first line.
     const lines = block.split("\n");
     const tcIndex = lines.findIndex((line) => SRT_TIMECODE.test(line));
@@ -65,7 +64,7 @@ export function captionsToPlain(captions: SrtLine[]): string {
 /**
  * Builds an LRC string ("[mm:ss.mmm] text" per line) from timed caption lines
  * so the karaoke UI can render them in sync with playback. Long instrumental
- * gaps (> 5s) between captions emit a "♪" marker line at the previous caption
+ * gaps (> 5s) between captions emit a "â™ª" marker line at the previous caption
  * end + 0.5s so the karaoke UI clears the prior lyric during the break.
  */
 export function buildLrc(captions: SrtLine[]): string {
@@ -82,12 +81,12 @@ export function buildLrc(captions: SrtLine[]): string {
     }
     const next = captions[i + 1];
     if (next && next.start - caption.end > 5) {
-      // Instrumental break: mark the gap with a ♪ line at caption end + 0.5s.
+      // Instrumental break: mark the gap with a â™ª line at caption end + 0.5s.
       const markerMs = Math.round((caption.end + 0.5) * 1000);
       const mm = Math.floor(markerMs / 60000);
       const ss = Math.floor((markerMs % 60000) / 1000);
       const mss = markerMs % 1000;
-      lines.push(`[${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}.${String(mss).padStart(3, "0")}] ♪`);
+      lines.push(`[${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}.${String(mss).padStart(3, "0")}] â™ª`);
     }
   }
   return lines.join("\n");
@@ -211,7 +210,7 @@ async function lookupLrclib(
   }
 
   // TITLE-ONLY fallback: when the parsed artist is junk (cobalt names files
-  // like "BAILA LENTO (Slowed) - Release.mp3" → artist="Release"), the
+  // like "BAILA LENTO (Slowed) - Release.mp3" â†’ artist="Release"), the
   // artist+title query above finds nothing even though the track exists on
   // LRCLIB. Search by the CLEANED title alone and pick the best
   // non-instrumental hit whose trackName contains the title.
@@ -219,7 +218,7 @@ async function lookupLrclib(
   const titleList = Array.isArray(titleOnly) ? titleOnly : [];
   if (titleList.length) {
     const titleLower = title.toLowerCase();
-    // The user's original (uncleaned) title — used to prefer a hit matching
+    // The user's original (uncleaned) title â€” used to prefer a hit matching
     // e.g. "(Slowed)" over the clean-exact record of the un-edited original.
     const originalTitleLower =
       typeof originalTitle === "string" && originalTitle.trim()
@@ -405,92 +404,6 @@ async function searchGenius(artist: string, title: string): Promise<string | nul
   return plain || null;
 }
 
-// --- Step 3 - platform auto-captions (SRT) as final text fallback ---
-
-async function captionsForId(id: string): Promise<LyricsResult | null> {
-  if (!isValidId(id)) return null;
-  let files: string[];
-  try {
-    files = await fsp.readdir(storageDir());
-  } catch {
-    return null;
-  }
-  const captionFile = files
-    .filter((name) => name.startsWith(`${id}.`) && name.endsWith(".srt"))
-    .sort()[0];
-  if (!captionFile) return null;
-  try {
-    const raw = await fsp.readFile(path.join(storageDir(), captionFile), "utf8");
-    const captions = parseSrt(raw);
-    const plain = captionsToPlain(captions);
-    return plain ? { synced: null, plain } : null;
-  } catch {
-    return null;
-  }
-}
-
-// --- Step 4 - onDemand platform auto-captions (fresh YouTube timedtext) ---
-
-const YOUTUBE_VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
-
-/** Extracts the 11-char video id from a YouTube / YouTube Music URL, else null. */
-function videoIdFromUrl(url: string): string | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(url.trim());
-  } catch {
-    return null;
-  }
-  const host = parsed.hostname.replace(/^(?:www|m)\./, "").toLowerCase();
-  if (!["youtube.com", "music.youtube.com", "youtu.be", "youtube-nocookie.com"].includes(host)) {
-    return null;
-  }
-  if (host === "youtu.be") {
-    const id = parsed.pathname.replace(/^\/+/, "").split("/")[0];
-    return YOUTUBE_VIDEO_ID.test(id) ? id : null;
-  }
-  const v = parsed.searchParams.get("v");
-  if (v && YOUTUBE_VIDEO_ID.test(v)) return v;
-  const pathMatch = parsed.pathname.match(/\/(?:shorts|embed|live)\/([A-Za-z0-9_-]{11})/);
-  return pathMatch ? pathMatch[1] : null;
-}
-
-/**
- * Fetches a video's auto-captions ON DEMAND (yt-dlp caption-only — timedtext
- * is served to datacenter IPs even when the audio stream is 403-blocked) and
- * returns them as synced LRC + plain text. Any failure (no captions, DRM,
- * bot block, timeout, missing binary) resolves to null, never throws.
- */
-async function fetchOnDemandCaptions(url: string): Promise<LyricsResult | null> {
-  const videoId = videoIdFromUrl(url);
-  if (!videoId) return null;
-  // Rebuild a clean watch URL so stray params (si=, list=, …) never leak in.
-  const cleanUrl = `https://www.youtube.com/watch?v=${videoId}`;
-  try {
-    const dir = storageDir();
-    await fsp.mkdir(dir, { recursive: true });
-    const captionFiles = await downloadAutoCaptions(cleanUrl, dir, videoId);
-    if (!captionFiles.length) return null;
-    // Prefer converted .srt (ffmpeg present) over raw .vtt; among those,
-    // English captions first, else the first available language.
-    const byExt = [...captionFiles].sort(
-      (a, b) => Number(b.endsWith(".srt")) - Number(a.endsWith(".srt")),
-    );
-    const preferred = byExt.find((file) => /\.en(?:-|\.|$)/i.test(path.basename(file)));
-    const file = preferred ?? byExt[0];
-    const raw = await fsp.readFile(file, "utf8");
-    const captions = parseSrt(raw);
-    if (!captions.length) return null;
-    return { synced: buildLrc(captions), plain: captionsToPlain(captions) };
-  } catch (err) {
-    console.warn(
-      "[lyrics] on-demand caption fetch failed:",
-      err instanceof Error ? err.message : String(err),
-    );
-    return null;
-  }
-}
-
 /**
  * Strips a leading "{artist} - " prefix from the title (case-insensitive).
  * YT Music video titles embed the artist before the track name ("Ari Abdul -
@@ -529,7 +442,7 @@ export function cleanTrackMetadata(artist: string, title: string): { artist: str
         /\b(?:slowed|sped up|spedup|reverb|remix|nightcore|tiktok|tik tok)(?:\s*\+\s*(?:slowed|sped up|spedup|reverb|remix|nightcore|tiktok|tik tok))*/gi,
         " ",
       )
-      .replace(/\s+[-–—]\s*(?:single|remaster(?:ed)?|edit|version|official(?:\s+\w+)?)?\s*$/i, "")
+      .replace(/\s+[-â€“â€”]\s*(?:single|remaster(?:ed)?|edit|version|official(?:\s+\w+)?)?\s*$/i, "")
       .replace(
         /\s+(?:official(?:\s+(?:music\s+)?video|audio|lyrics?)?|music\s+video|lyrics?|audio|edit|version|remaster(?:ed)?|single|explicit|hd|4k)\s*$/gi,
         "",
@@ -600,19 +513,19 @@ export function rescaleRatioFor(
 }
 
 /**
- * Waterfall: LRCLIB (synced) -> Genius public page (plain) -> stored
- * auto-captions for the track id (plain) -> on-demand YouTube auto-captions
- * (synced LRC). `id` and `sourceUrl` are optional so existing artist/title
- * callers keep working unchanged. `actualDurationSec` is the real duration of
- * the stored MP3 (from metadata or ffprobe); when it differs from the
- * ORIGINAL track's LRCLIB duration, synced timestamps are rescaled by
- * ratio = actual / original so slowed/sped-up audio stays in sync.
+ * Waterfall (decentralized): LRCLIB (synced, primary source) -> Genius
+ * public page (plain). No speech-to-text tier, no caption scraping.
+ * `id` and `sourceUrl` are optional so existing artist/title callers keep
+ * working unchanged. `actualDurationSec` is the real duration of the stored
+ * MP3 (from metadata or ffprobe); when it differs from the ORIGINAL track's
+ * LRCLIB duration, synced timestamps are rescaled by ratio = actual /
+ * original so slowed/sped-up audio stays in sync.
  */
 export async function lookupLyrics(
   artist: string,
   title: string,
   id?: string,
-  sourceUrl?: string,
+  _sourceUrl?: string,
   actualDurationSec?: number,
 ): Promise<LyricsResult> {
   // Search with CLEANED names for the ORIGINAL track; the caller keeps the
@@ -621,7 +534,7 @@ export async function lookupLyrics(
   const a = cleaned.artist;
   const t = cleaned.title;
   const hasQuery = Boolean(a || t);
-  if (!hasQuery && !id && !sourceUrl) return { synced: null, plain: null };
+  if (!hasQuery) return { synced: null, plain: null };
 
   if (hasQuery) {
     const lrclib = await lookupLrclib(a, t, actualDurationSec, title);
@@ -646,16 +559,6 @@ export async function lookupLyrics(
 
     const geniusPlain = await searchGenius(a, t);
     if (geniusPlain) return { synced: null, plain: geniusPlain };
-  }
-
-  if (id) {
-    const captionHit = await captionsForId(id);
-    if (captionHit) return captionHit;
-  }
-
-  if (sourceUrl) {
-    const onDemandHit = await fetchOnDemandCaptions(sourceUrl);
-    if (onDemandHit) return onDemandHit;
   }
 
   return { synced: null, plain: null };

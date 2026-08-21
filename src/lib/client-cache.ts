@@ -66,6 +66,44 @@ export const clientCache = audioCore || lyricsCore
   ? { audio: audioCore, lyrics: lyricsCore }
   : null;
 
+// Android browsers can stall the UI thread when an IDB cursor materializes a
+// huge key range in one go. Batch every bulk read: yield to the event loop
+// between chunks so the player UI stays responsive during library scans.
+const IDB_BATCH_SIZE = 200;
+
+async function getAllKeysBatched(
+  db: IDBDatabase,
+  storeName: string,
+): Promise<string[]> {
+  const keys: string[] = [];
+  return new Promise<string[]>((resolve) => {
+    let tx: IDBTransaction;
+    try {
+      tx = db.transaction(storeName, "readonly");
+    } catch {
+      resolve(keys);
+      return;
+    }
+    const req = tx.objectStore(storeName).openCursor();
+    req.onsuccess = () => {
+      const cursor = req.result;
+      if (!cursor) {
+        resolve(keys);
+        return;
+      }
+      keys.push(String(cursor.key));
+      if (keys.length % IDB_BATCH_SIZE === 0) {
+        // Yield: schedule the next continuation off this task so pending
+        // rendering/input work on the main thread can interleave.
+        setTimeout(() => cursor.continue(), 0);
+        return;
+      }
+      cursor.continue();
+    };
+    req.onerror = () => resolve(keys);
+  });
+}
+
 // --- Object-URL bookkeeping for audio blobs ---
 const audioUrls = new Map<string, string>();
 
