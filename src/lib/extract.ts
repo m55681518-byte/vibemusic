@@ -557,6 +557,7 @@ async function tryYtdlpDirect(url: string, id: string, mp3Path: string): Promise
       "-x", "--audio-format", "mp3", "--audio-quality", "0",
       "--output", path.join(tmpDir, "%(id)s.%(ext)s"),
       ...clientArgs,
+      ...(process.env.YTDLP_DEBUG === "1" ? ["--verbose"] : []),
       url,
     ];
     try {
