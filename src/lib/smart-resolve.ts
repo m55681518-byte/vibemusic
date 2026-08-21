@@ -48,17 +48,22 @@ async function scrapeTikwmMeta(url: string): Promise<SmartMeta | null> {
 
 async function scrapeYoutubeMeta(url: string): Promise<SmartMeta | null> {
   try {
-    // Use a lightweight metadata endpoint (yt-dlp --dump-json via a proxy, or oEmbed)
-    // For stealth mode we just do best-effort title extraction from URL / page title
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    // Lightweight PUBLIC metadata only: YouTube's oEmbed endpoint returns
+    // JSON (title + author_name) for any video/short URL. No page fetching,
+    // no scraping, no bot wall.
+    const endpoint = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
+    const res = await fetch(endpoint, {
+      headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+      signal: AbortSignal.timeout(8000),
+    });
     if (!res.ok) return null;
-    const html = await res.text();
-    const titleMatch = html.match(/<title>([^<]+)<\/title>/i);
-    const title = titleMatch ? titleMatch[1].trim() : "";
-    // Try to extract artist from meta tags
-    const artistMatch = html.match(/"artist"\s*[:=]\s*"([^"]+)"/i) || html.match(/"name"\s*[:=]\s*"([^"]+)"/i);
-    const artist = artistMatch ? artistMatch[1].trim() : "Unknown artist";
-    return { title, artist, thumbnail: undefined };
+    const body = await res.json();
+    if (!body?.title) return null;
+    return {
+      title: String(body.title).trim(),
+      artist: String(body.author_name || "").trim() || "Unknown artist",
+      thumbnail: undefined,
+    };
   } catch {
     return null;
   }
