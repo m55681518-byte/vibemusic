@@ -33,12 +33,14 @@ const dockerfile = readFileSync(path.join(root, "Dockerfile"), "utf8");
 const startShPath = path.join(root, "start.sh");
 const startSh = existsSync(startShPath) ? readFileSync(startShPath, "utf8") : "";
 
-// G1 — runner stage installs the bgutil POT provider server (clone + deps + build).
+// G1 — runner stage ships the bgutil POT provider server (prebuilt upstream
+// image COPY or source build with install).
 check(
-  "G1 Dockerfile builds bgutil-ytdlp-pot-provider server",
+  "G1 Dockerfile ships bgutil-ytdlp-pot-provider server",
   dockerfile.includes("bgutil-ytdlp-pot-provider") &&
-    /npm (ci|install)/.test(dockerfile),
-  "clone/install of the POT server missing",
+    (/COPY --from=brainicism\/bgutil-ytdlp-pot-provider/.test(dockerfile) ||
+      /npm (ci|install)/.test(dockerfile)),
+  "POT server missing (neither prebuilt image nor source build)",
 );
 
 // G2 — the yt-dlp plugin is installed into a system plugin dir so the
