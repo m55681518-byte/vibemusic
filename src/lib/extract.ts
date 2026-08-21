@@ -59,6 +59,11 @@ const PLAYER_CLIENT_VARIANTS: ReadonlyArray<readonly string[]> = [
   ["--extractor-args", "youtube:player_client=default,-android_sdkless"],
   ["--extractor-args", "youtube:player_client=tv"],
   ["--extractor-args", "youtube:player_client=android_vr"],
+  // POT-gated clients: for these, yt-dlp consults the registered PO Token
+  // provider (bgutil:http) and runs JS challenges via node — the only clients
+  // that can pass YouTube's datacenter-IP wall without cookies.
+  ["--extractor-args", "youtube:player_client=web"],
+  ["--extractor-args", "youtube:player_client=mweb"],
 ];
 
 // Self-contained generic TikTok title detector.
